@@ -53,6 +53,7 @@ EXIT_SWITCH_PIN = 18
 SPRAY_DURATION = 0.5  # seconds
 LOOP_DELAY = 2  # seconds delay between detection cycles
 MIN_DETECTION_INTERVAL = 3  # seconds
+INITIAL_DETECTION_PERIOD = 1  # seconds
 
 # Motion detection constants
 BLUR_SIZE = 21
@@ -77,7 +78,7 @@ SWEEP_ITERATIONS = 5
 exit_flag = False
 prev_frame = None
 last_detection_time = 0
-target_first_acquired_time = datetime.datetime.now()
+target_first_acquired_time = None
 last_target_x = 0
 last_target_y = 0
 last_reference_update = datetime.datetime.now()
@@ -160,42 +161,57 @@ def is_target_stationary(current_x, current_y):
     Check if target has remained stationary by tracking position history
     Returns True if target has been relatively stationary for the required time
     """
-    global target_positions
+    global target_positions, target_first_acquired_time
+    
     current_time = datetime.datetime.now()
+    
+    # Initialize first acquisition time if not set
+    if target_first_acquired_time is None:
+        target_first_acquired_time = current_time
+        log_status("First target acquisition time set")
     
     # Add current position to history
     target_positions.append((current_x, current_y, current_time))
     
-    # Keep only recent positions
-    while (len(target_positions) > 0 and 
-           (current_time - target_positions[0][2]).seconds > MIN_ACQUIRE_TIME):
+    # Keep only recent positions (limit to POSITION_HISTORY_LENGTH)
+    while len(target_positions) > POSITION_HISTORY_LENGTH:
         target_positions.pop(0)
     
-    # Check if enough time has passed since first acquisition
-    time_since_first_acquisition = current_time - target_first_acquired_time
-    if time_since_first_acquisition.seconds >= INITIAL_DETECTION_PERIOD:
-        # Check if all recent positions are within threshold
-        is_stationary = True
-        for i in range(len(target_positions) - 1):
-            dx = abs(target_positions[i][0] - target_positions[i+1][0])
-            dy = abs(target_positions[i][1] - target_positions[i+1][1])
-            if dx > STATIONARY_THRESHOLD or dy > STATIONARY_THRESHOLD:
-                is_stationary = False
-                break
-        
-        # Check if enough time has passed
-        time_stationary = current_time - target_positions[0][2]
-        
-        if is_stationary and time_stationary.seconds >= MIN_ACQUIRE_TIME:
-            log_status("Target has been detected and moved less thand thresholds")
-            return True
-    else:
-        # If the target has been detected for the initial detection period, consider it stationary
-        if len(target_positions) >= MIN_POSITIONS_FOR_STATIONARY:
-            log_status("Target has been detected for the initial detection period, consider it stationary")
-            return True
+    # Need minimum number of positions to determine if stationary
+    if len(target_positions) < MIN_POSITIONS_FOR_STATIONARY:
+        log_status(f"Not enough position history: {len(target_positions)}/{MIN_POSITIONS_FOR_STATIONARY}")
+        return False
     
-    return False
+    # Check if enough time has passed since first acquisition
+    time_since_first_acquisition = (current_time - target_first_acquired_time).total_seconds()
+    log_status(f"Time since first acquisition: {time_since_first_acquisition:.1f} seconds")
+    
+    if time_since_first_acquisition < MIN_ACQUIRE_TIME:
+        log_status("Not enough time since first acquisition")
+        return False
+    
+    # Check if all recent positions are within threshold
+    is_stationary = True
+    max_movement = 0
+    
+    for i in range(len(target_positions) - 1):
+        dx = abs(target_positions[i][0] - target_positions[i+1][0])
+        dy = abs(target_positions[i][1] - target_positions[i+1][1])
+        movement = max(dx, dy)
+        max_movement = max(max_movement, movement)
+        
+        if movement > STATIONARY_THRESHOLD:
+            is_stationary = False
+            log_status(f"Target moved too much: {movement} pixels (threshold: {STATIONARY_THRESHOLD})")
+            break
+    
+    if is_stationary:
+        log_status(f"Target is stationary. Max movement: {max_movement} pixels")
+        return True
+    else:
+        # Reset acquisition time if target moved too much
+        target_first_acquired_time = current_time
+        return False
 
 def aim_and_spray(x, y):
     """Aim servos and activate spray"""
@@ -277,7 +293,7 @@ def check_exit_conditions():
 
 def main():
     """Main execution function"""
-    global prev_frame, exit_flag, last_detection_time, last_reference_update, target_positions, target_first_acquired_time
+    global prev_frame, exit_flag, last_detection_time, last_reference_update, target_positions, target_first_acquired_time, target_positions
 
     try:
         # Initialize GPIO
@@ -362,6 +378,7 @@ def main():
                         
                         # Clear position history after confirming stationary target
                         target_positions = []
+                        target_first_acquired_time = None 
                         
             # Display frame
             cv2.imshow("Frame", image)
