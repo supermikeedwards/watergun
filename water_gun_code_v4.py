@@ -84,7 +84,7 @@ last_target_y = 0
 last_reference_update = datetime.datetime.now()
 target_positions = []
 POSITION_HISTORY_LENGTH = 10  # Number of positions to keep track of
-STATIONARY_THRESHOLD = 20  # Maximum allowed movement in pixels
+STATIONARY_THRESHOLD = 100  # Maximum allowed movement in pixels
 MIN_POSITIONS_FOR_STATIONARY = 5  # Minimum number of positions needed to confirm stationary
 
 
@@ -156,19 +156,11 @@ def detect_motion(current_frame, reference_frame):
     contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     return contours, thresh
 
+""" OLD VERSION
+
 def is_target_stationary(current_x, current_y):
-    """
-    Check if target has remained stationary by tracking position history
-    Returns True if target has been relatively stationary for the required time
-    """
-    global target_positions, target_first_acquired_time
     
     current_time = datetime.datetime.now()
-    
-    # Initialize first acquisition time if not set
-    if target_first_acquired_time is None:
-        target_first_acquired_time = current_time
-        log_status("First target acquisition time set")
     
     # Add current position to history
     target_positions.append((current_x, current_y, current_time))
@@ -212,6 +204,68 @@ def is_target_stationary(current_x, current_y):
         # Reset acquisition time if target moved too much
         target_first_acquired_time = current_time
         return False
+"""        
+            
+    def is_target_stationary(current_x, current_y):
+    """
+    Check if target has remained stationary by tracking position history
+    Returns True if target has been relatively stationary for the required time
+    """
+    
+    current_time = datetime.datetime.now()
+    
+    # Add current position to history
+    target_positions.append((current_x, current_y, current_time))
+    
+    # Keep only recent positions (limit to POSITION_HISTORY_LENGTH)
+    while len(target_positions) > POSITION_HISTORY_LENGTH:
+        target_positions.pop(0)
+    
+    # Need minimum number of positions to determine if stationary
+    if len(target_positions) < MIN_POSITIONS_FOR_STATIONARY:
+        log_status(f"Not enough position history: {len(target_positions)}/{MIN_POSITIONS_FOR_STATIONARY}")
+        return False
+    
+    # Check if enough time has passed since first acquisition
+    time_since_first_acquisition = (current_time - target_first_acquired_time).total_seconds()
+    log_status(f"Time since first acquisition: {time_since_first_acquisition:.1f} seconds")
+    
+    if time_since_first_acquisition < MIN_ACQUIRE_TIME:
+        log_status("Not enough time since first acquisition")
+        return False
+    
+    # Get the position when the target was first acquired
+    if hasattr(is_target_stationary, 'initial_position'):
+        initial_pos_x, initial_pos_y = is_target_stationary.initial_position
+    else:
+        # First time this function runs for current tracking session
+        initial_pos_x, initial_pos_y = current_x, current_y
+        is_target_stationary.initial_position = (initial_pos_x, initial_pos_y)
+    
+    # Check if all recent positions are within threshold compared to initial position
+    is_stationary = True
+    max_movement = 0
+    
+    for pos_x, pos_y, _ in target_positions:
+        dx = abs(pos_x - initial_pos_x)
+        dy = abs(pos_y - initial_pos_y)
+        movement = math.sqrt(dx*dx + dy*dy)
+        max_movement = max(max_movement, movement)
+        
+        if movement > STATIONARY_THRESHOLD:
+            is_stationary = False
+            log_status(f"Target moved too much: {movement} pixels from initial position (threshold: {STATIONARY_THRESHOLD})")
+            break
+    
+    if is_stationary:
+        log_status(f"Target is stationary. Max movement: {max_movement} pixels")
+        return True
+    else:
+        # Reset acquisition time and initial position if target moved too much
+        target_first_acquired_time = current_time
+        is_target_stationary.initial_position = (current_x, current_y)
+        return False
+        
 
 def aim_and_spray(x, y):
     """Aim servos and activate spray"""
@@ -293,7 +347,7 @@ def check_exit_conditions():
 
 def main():
     """Main execution function"""
-    global prev_frame, exit_flag, last_detection_time, last_reference_update, target_positions, target_first_acquired_time, target_positions
+    global prev_frame, exit_flag, last_detection_time, last_reference_update, target_positions, target_first_acquired_time
 
     try:
         # Initialize GPIO
@@ -353,6 +407,7 @@ def main():
                     # Set target_first_acquired_time if it's the first detection
                     if target_first_acquired_time is None:
                         target_first_acquired_time = current_time
+                        log_status("First target acquisition time set")
                     
                     if is_target_stationary(center_x, center_y):
                         log_status("Target acquired and stationary")
