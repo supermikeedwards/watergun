@@ -351,13 +351,14 @@ def aim_and_spray(x, y):
         
         # INVERT X-axis to fix camera flip issue - when object is on left, aim left
         norm_x = 1.0 - norm_x
+        norm_y = 1.0 - norm_y
         
         # Map normalized coordinates to servo angles using custom ranges
         angle_x = SERVO_X_MIN_ANGLE + norm_x * (SERVO_X_MAX_ANGLE - SERVO_X_MIN_ANGLE)
         angle_y = SERVO_Y_MIN_ANGLE + norm_y * (SERVO_Y_MAX_ANGLE - SERVO_Y_MIN_ANGLE)
         
         # Apply water jet angle offset to fire higher
-        angle_y = angle_y - WATER_JET_ANGLE_OFFSET
+        angle_y = angle_y + WATER_JET_ANGLE_OFFSET
         
         # Cap angles to ensure they're within the allowed range
         angle_x = max(MIN_ANG[0], min(MAX_ANG[0], angle_x))
