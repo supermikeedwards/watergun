@@ -140,6 +140,7 @@ SERVO_Y_MAX_ANGLE = 150  # Maximum angle for Y servo
 
 # Global variables
 exit_flag = False
+water_enabled = True
 prev_frame = None
 last_detection_time = 0
 target_first_acquired_time = None
@@ -366,38 +367,47 @@ def aim_and_spray(x, y):
         
         log_status(f"Calculated angles (with offset): x={angle_x:.2f}, y={angle_y:.2f}")
         
-        # Initial aim
+        # Always aim the servos regardless of water setting
         set_servo_angle(SERVO_X_CHANNEL, angle_x)
         set_servo_angle(SERVO_Y_CHANNEL, angle_y)
         
-        # Activate spray
-        log_status("Starting spray sequence")
-        GPIO.output(RELAY_PIN, GPIO.HIGH)
-        
-        # Sweeping pattern
-        left_sweep = max(MIN_ANG[0], angle_x - SERVO_TRIGGER_SWEEP)
-        right_sweep = min(MAX_ANG[0], angle_x + SERVO_TRIGGER_SWEEP)
-        
-        for i in range(SWEEP_ITERATIONS):
-            log_status(f"Sweep iteration {i+1}/{SWEEP_ITERATIONS}")
-            set_servo_angle(SERVO_X_CHANNEL, left_sweep)
+        # Only activate water spray if water is enabled
+        if water_enabled:
+            log_status("Starting spray sequence")
+            GPIO.output(RELAY_PIN, GPIO.HIGH)
             
-            # Check for exit during spray sequence
-            if exit_flag:
-                break
-            time.sleep(SPRAY_DURATION / (SWEEP_ITERATIONS * 2))
+            # Sweeping pattern
+            left_sweep = max(MIN_ANG[0], angle_x - SERVO_TRIGGER_SWEEP)
+            right_sweep = min(MAX_ANG[0], angle_x + SERVO_TRIGGER_SWEEP)
             
-            set_servo_angle(SERVO_X_CHANNEL, right_sweep)
-            if exit_flag:
-                break
-            time.sleep(SPRAY_DURATION / (SWEEP_ITERATIONS * 2))
+            for i in range(SWEEP_ITERATIONS):
+                log_status(f"Sweep iteration {i+1}/{SWEEP_ITERATIONS}")
+                set_servo_angle(SERVO_X_CHANNEL, left_sweep)
+                
+                # Check for exit during spray sequence
+                if exit_flag:
+                    break
+                time.sleep(SPRAY_DURATION / (SWEEP_ITERATIONS * 2))
+                
+                set_servo_angle(SERVO_X_CHANNEL, right_sweep)
+                if exit_flag:
+                    break
+                time.sleep(SPRAY_DURATION / (SWEEP_ITERATIONS * 2))
+        else:
+            log_status("Water spray DISABLED - aiming only")
+            # Still do the timing delay to maintain consistent behavior
+            time.sleep(SPRAY_DURATION)
             
     except Exception as e:
         log_error("Error during aim_and_spray", e)
     finally:
+        # Always ensure relay is off
         GPIO.output(RELAY_PIN, GPIO.LOW)
         set_servo_angle(SERVO_X_CHANNEL, angle_x)
-        log_status("Spray sequence completed")
+        if water_enabled:
+            log_status("Spray sequence completed")
+        else:
+            log_status("Aiming completed (water disabled)")
         
 def get_largest_motion(contours, min_area=MIN_AREA):
     """Get center coordinates and bounding box of largest motion with optional shape filtering"""
@@ -437,13 +447,18 @@ def get_largest_motion(contours, min_area=MIN_AREA):
 
 
 def check_exit_conditions():
-    """Check for exit conditions"""
-    global exit_flag, calibration_mode
+    """Check for exit conditions and water control"""
+    global exit_flag, calibration_mode, water_enabled
     while not exit_flag:
         if GPIO.input(EXIT_SWITCH_PIN) == GPIO.LOW:
-            log_status("Exit button pressed")
-            exit_flag = True
-            break
+            log_status("Water control switch pressed - toggling water flow")
+            water_enabled = not water_enabled
+            if water_enabled:
+                log_status("Water flow ENABLED")
+            else:
+                log_status("Water flow DISABLED - detection continues")
+            # Add a small delay to prevent switch bounce
+            time.sleep(0.5)
         
         key = cv2.waitKey(1) & 0xFF
         if key == 27:  # ESC key
@@ -459,6 +474,13 @@ def check_exit_conditions():
         elif key == ord('r'):  # 'r' key to reset tracking
             log_status("Reset tracking requested")
             reset_tracking()
+        elif key == ord('w'):  # 'w' key to toggle water
+            log_status("Water toggle key pressed")
+            water_enabled = not water_enabled
+            if water_enabled:
+                log_status("Water flow ENABLED")
+            else:
+                log_status("Water flow DISABLED - detection continues")
             
         time.sleep(0.1)
 
@@ -728,12 +750,8 @@ def interruptible_sleep(duration):
     while time.time() - start_time < duration:
         if exit_flag:
             return
-        if GPIO.input(EXIT_SWITCH_PIN) == GPIO.LOW:
-            log_status("Exit button pressed during sleep")
-            exit_flag = True
-            return
         key = cv2.waitKey(100) & 0xFF
-        if key == 27:  # ESC key
+        if key == 27:  # ESC key only
             log_status("ESC key pressed during sleep")
             exit_flag = True
             return
@@ -743,7 +761,7 @@ def main():
     """Main execution function"""
     global prev_frame, exit_flag, last_detection_time, last_reference_update
     global tracker, tracking_box, tracking_start_time, track_failure_count, target_positions, currently_tracking
-    global target_first_acquired_time, pca, calibration_mode
+    global target_first_acquired_time, pca, calibration_mode, water_enabled
 
     try:
         # Initialize GPIO
@@ -826,6 +844,8 @@ def main():
                         # Draw rectangle around tracked object
                         cv2.rectangle(debug_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
                         cv2.putText(debug_frame, "TARGET STABLE", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        cv2.putText(debug_frame, f"Water: {'ON' if water_enabled else 'OFF'}", (10, 60), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if water_enabled else (0, 0, 255), 2)
                         cv2.drawMarker(debug_frame, (center_x, center_y), (0, 0, 255), cv2.MARKER_CROSS, 10, 2)
                         
                         # Save image
@@ -834,7 +854,7 @@ def main():
                         cv2.imwrite(image_path, debug_frame)
                         log_status(f"Saved detection image: {image_path}")
                         
-                        # Process target
+                        # Process target (will aim and spray only if water is enabled)
                         aim_and_spray(center_x, center_y)
                         last_detection_time = current_time
                         
@@ -849,6 +869,8 @@ def main():
                         # Still tracking but not yet stationary
                         cv2.rectangle(debug_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
                         cv2.putText(debug_frame, "Tracking", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                        cv2.putText(debug_frame, f"Water: {'ON' if water_enabled else 'OFF'}", (10, 30), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if water_enabled else (0, 0, 255), 2)
                         cv2.drawMarker(debug_frame, (center_x, center_y), (0, 0, 255), cv2.MARKER_CROSS, 10, 2)
                     
                 else:
@@ -857,6 +879,8 @@ def main():
                     log_status(f"Tracking failure #{track_failure_count}/{MAX_TRACK_FAILURES}")
                     cv2.putText(debug_frame, f"Tracking failure #{track_failure_count}", (10, 30), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    cv2.putText(debug_frame, f"Water: {'ON' if water_enabled else 'OFF'}", (10, 60), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if water_enabled else (0, 0, 255), 2)
                     
                     if track_failure_count >= MAX_TRACK_FAILURES:
                         log_status("Too many tracking failures, resetting")
@@ -865,83 +889,109 @@ def main():
                 # Check for tracking timeout
                 if tracking_start_time:
                     elapsed_time = (current_time - tracking_start_time).total_seconds()
-                    cv2.putText(debug_frame, f"Tracking: {elapsed_time:.1f}s", (10, 60), 
+                    cv2.putText(debug_frame, f"Tracking: {elapsed_time:.1f}s", (10, 90), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
                     
                     if elapsed_time > TRACKING_TIMEOUT:
-                        log_status(f"Tracking timeout after {elapsed_time:.1f} seconds")
+                        log_status("Tracking timeout reached, resetting")
                         reset_tracking()
             
-            # If not tracking, look for motion
             else:
-                # Initialize or update reference frame periodically
-                if prev_frame is None or (current_time - last_reference_update).seconds > REF_FRAME_TIME_LIMIT:
+                # Not currently tracking - look for new motion
+                if prev_frame is None:
+                    prev_frame = processed_frame
+                    continue
+                
+                # Update reference frame periodically
+                time_since_ref_update = (current_time - last_reference_update).total_seconds()
+                if time_since_ref_update > REF_FRAME_TIME_LIMIT:
+                    log_status("Updating reference frame")
                     prev_frame = processed_frame
                     last_reference_update = current_time
-                    log_status("Reference frame updated")
+                    continue
+                
+                # Check minimum time between detections
+                time_since_last_detection = (current_time - datetime.datetime.fromtimestamp(last_detection_time)).total_seconds() if last_detection_time else float('inf')
+                
+                if time_since_last_detection < MIN_DETECTION_INTERVAL:
+                    cv2.putText(debug_frame, f"Cooldown: {MIN_DETECTION_INTERVAL - time_since_last_detection:.1f}s", (10, 30), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                    cv2.putText(debug_frame, f"Water: {'ON' if water_enabled else 'OFF'}", (10, 60), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if water_enabled else (0, 0, 255), 2)
+                    cv2.imshow("Debug", debug_frame)
                     continue
                 
                 # Detect motion
                 contours, thresh = detect_motion(processed_frame, prev_frame)
-                prev_frame = processed_frame
                 
-                # Look for suitable object to track
-                motion_result = get_largest_motion(contours)
+                # Find the largest motion
+                motion_result = get_largest_motion(contours, MIN_AREA)
                 
                 if motion_result:
-                    center_x, center_y, bbox, contour = motion_result
-                    (x, y, w, h) = bbox
+                    center_x, center_y, bounding_box, contour = motion_result
+                    x, y, w, h = bounding_box
                     
-                    # Start tracking this object
+                    log_status(f"Motion detected at ({center_x}, {center_y}), area: {cv2.contourArea(contour)}")
+                    
+                    # Initialize tracking
                     tracker = create_tracker()
-                    success = tracker.init(resized_image, (x, y, w, h))
+                    tracking_box = (x, y, w, h)
                     
-                    if success:
-                        log_status(f"Started tracking object at ({center_x}, {center_y})")
-                        tracking_box = (x, y, w, h)
+                    if tracker.init(resized_image, tracking_box):
+                        currently_tracking = True
                         tracking_start_time = current_time
                         target_first_acquired_time = current_time
-                        currently_tracking = True
                         track_failure_count = 0
                         target_positions = []
                         
-                        # Draw rectangle around detected motion
+                        log_status("Tracking initialized successfully")
+                        
+                        # Draw detection
                         cv2.rectangle(debug_frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
-                        cv2.putText(debug_frame, "Motion Detected", (x, y - 10), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                        cv2.putText(debug_frame, "Motion Detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                        cv2.putText(debug_frame, f"Water: {'ON' if water_enabled else 'OFF'}", (10, 60), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if water_enabled else (0, 0, 255), 2)
+                        cv2.drawMarker(debug_frame, (center_x, center_y), (255, 0, 0), cv2.MARKER_CROSS, 10, 2)
                     else:
                         log_status("Failed to initialize tracker")
-                
-                # Draw motion contours
-                cv2.putText(debug_frame, "Monitoring", (10, 30), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                cv2.drawContours(debug_frame, contours, -1, (0, 255, 255), 2)
-            
-            # Display status on frame
-            cv2.putText(debug_frame, f"Time: {current_time.strftime('%H:%M:%S')}", (10, debug_frame.shape[0] - 10), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                        cv2.putText(debug_frame, "Tracking Init Failed", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        cv2.putText(debug_frame, f"Water: {'ON' if water_enabled else 'OFF'}", (10, 60), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if water_enabled else (0, 0, 255), 2)
+                else:
+                    # No motion detected
+                    cv2.putText(debug_frame, "Looking for targets...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+                    cv2.putText(debug_frame, f"Water: {'ON' if water_enabled else 'OFF'}", (10, 60), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if water_enabled else (0, 0, 255), 2)
             
             # Show the frame
-            cv2.imshow("Water Gun Monitor", debug_frame)
+            cv2.imshow("Debug", debug_frame)
             
-            # Check for key presses (moved to check_exit_conditions thread)
-            
+            # Small delay to prevent excessive CPU usage
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+
+    except KeyboardInterrupt:
+        log_status("Keyboard interrupt received")
+        exit_flag = True
     except Exception as e:
-        log_error("Error in main loop", e)
-    
+        log_error("Unexpected error in main loop", e)
+        exit_flag = True
     finally:
-        # Clean up
-        log_status("Cleaning up resources")
-        GPIO.output(RELAY_PIN, GPIO.LOW)  # Ensure relay is off
-        center_servos()  # Return servos to center position
-        GPIO.cleanup()
-        cv2.destroyAllWindows()
+        log_status("Cleaning up...")
         
-        if 'camera' in locals():
+        # Cleanup
+        GPIO.output(RELAY_PIN, GPIO.LOW)  # Ensure relay is off
+        center_servos()  # Return servos to center
+        
+        try:
             camera.close()
+        except:
+            pass
+        
+        cv2.destroyAllWindows()
+        GPIO.cleanup()
         
         log_status("System shutdown complete")
-
 
 if __name__ == "__main__":
     main()
