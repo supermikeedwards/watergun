@@ -449,16 +449,32 @@ def get_largest_motion(contours, min_area=MIN_AREA):
 def check_exit_conditions():
     """Check for exit conditions and water control"""
     global exit_flag, calibration_mode, water_enabled
+    
+    # Track previous switch state for debouncing
+    prev_switch_state = GPIO.HIGH  # Assume switch starts in HIGH state (not pressed)
+    
     while not exit_flag:
-        if GPIO.input(EXIT_SWITCH_PIN) == GPIO.LOW:
+        # Read current switch state
+        current_switch_state = GPIO.input(EXIT_SWITCH_PIN)
+        
+        # Only toggle if switch transitioned from HIGH to LOW (button press)
+        if prev_switch_state == GPIO.HIGH and current_switch_state == GPIO.LOW:
             log_status("Water control switch pressed - toggling water flow")
             water_enabled = not water_enabled
             if water_enabled:
                 log_status("Water flow ENABLED")
             else:
                 log_status("Water flow DISABLED - detection continues")
-            # Add a small delay to prevent switch bounce
-            time.sleep(0.5)
+            
+            # Wait for switch to be released to prevent multiple triggers
+            while GPIO.input(EXIT_SWITCH_PIN) == GPIO.LOW:
+                time.sleep(0.05)  # Wait while switch is still pressed
+            
+            # Additional debounce delay
+            time.sleep(0.2)
+        
+        # Update previous state for next iteration
+        prev_switch_state = current_switch_state
         
         key = cv2.waitKey(1) & 0xFF
         if key == 27:  # ESC key
