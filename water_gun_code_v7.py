@@ -911,7 +911,7 @@ def main():
                     continue
                 
                 # Check minimum time between detections
-                time_since_last_detection = (current_time - datetime.datetime.fromtimestamp(last_detection_time)).total_seconds() if last_detection_time else float('inf')
+                time_since_last_detection = (current_time - last_detection_time).total_seconds() if last_detection_time else float('inf')
                 
                 if time_since_last_detection < MIN_DETECTION_INTERVAL:
                     cv2.putText(debug_frame, f"Cooldown: {MIN_DETECTION_INTERVAL - time_since_last_detection:.1f}s", (10, 30), 
