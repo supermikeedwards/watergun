@@ -49,24 +49,33 @@ def _cleanup_old_images(retention_days):
         log.info("Deleted %d images older than %dd", removed, retention_days)
 
 
-def _switch_watcher():
-    """Daemon: toggles state.water_enabled on physical switch press (HIGH -> LOW)."""
-    prev = 1
+def _switch_watcher(debounce_ms):
+    """Daemon: mirrors the physical switch's current (debounced) level into state.switch_enabled.
+    This is an AND-gate with state.water_enabled (web UI), so both must be True to spray.
+    """
+    debounce_s = debounce_ms / 1000.0
+    # Seed with current physical state so boot-time flags match reality.
+    try:
+        state.switch_enabled = hardware.read_switch()
+    except Exception:
+        pass
+    candidate = state.switch_enabled
+    candidate_since = time.time()
+    log.info("Switch watcher started: initial switch_enabled=%s", state.switch_enabled)
     while not state.exit_flag:
         try:
             cur = hardware.read_switch()
-            if prev == 1 and cur == 0:
+            if cur != candidate:
+                candidate = cur
+                candidate_since = time.time()
+            elif cur != state.switch_enabled and (time.time() - candidate_since) >= debounce_s:
                 with state.lock:
-                    state.water_enabled = not state.water_enabled
-                log.info("Physical switch: water %s", "ENABLED" if state.water_enabled else "DISABLED")
-                # wait for release
-                while hardware.read_switch() == 0 and not state.exit_flag:
-                    time.sleep(0.05)
-                time.sleep(0.2)
-            prev = cur
+                    state.switch_enabled = cur
+                log.info("Physical switch -> %s (armed=%s)",
+                         "ENABLED" if cur else "DISABLED", state.armed)
         except Exception as e:
             log.error("Switch watcher error: %s", e)
-        time.sleep(0.05)
+        time.sleep(0.02)
 
 
 def _aim_and_spray(cx, cy, cal, cfg):
@@ -86,8 +95,9 @@ def _aim_and_spray(cx, cy, cal, cfg):
     hardware.set_servo(hardware.SERVO_X_CHANNEL, ax)
     hardware.set_servo(hardware.SERVO_Y_CHANNEL, ay)
 
-    if not state.water_enabled:
-        log.info("Water disabled — aim only, no spray")
+    if not state.armed:
+        log.info("Not armed (water_enabled=%s switch_enabled=%s) — aim only, no spray",
+                 state.water_enabled, state.switch_enabled)
         time.sleep(sp["spray_duration"])
         return
 
@@ -99,15 +109,15 @@ def _aim_and_spray(cx, cy, cal, cfg):
     step_sleep = sp["spray_duration"] / (sp["sweep_iterations"] * 2)
     try:
         for i in range(sp["sweep_iterations"]):
-            if not state.water_enabled or state.exit_flag:
+            if not state.armed or state.exit_flag:
                 log.info("Spray interrupted at iteration %d", i)
                 break
             hardware.set_servo(hardware.SERVO_X_CHANNEL, left)
-            if not state.water_enabled or state.exit_flag:
+            if not state.armed or state.exit_flag:
                 break
             time.sleep(step_sleep)
             hardware.set_servo(hardware.SERVO_X_CHANNEL, right)
-            if not state.water_enabled or state.exit_flag:
+            if not state.armed or state.exit_flag:
                 break
             time.sleep(step_sleep)
     finally:
@@ -118,16 +128,23 @@ def _aim_and_spray(cx, cy, cal, cfg):
 def run():
     cfg = config.load()
     cal = calibration.load()
-    cam, raw = hardware.init(cfg["camera"])
+    cam, raw = hardware.init(cfg["camera"], cfg.get("switch"))
     hardware.set_servo(hardware.SERVO_X_CHANNEL, cal["SERVO_X_CENTER"])
     hardware.set_servo(hardware.SERVO_Y_CHANNEL, cal["SERVO_Y_CENTER"])
 
-    threading.Thread(target=_switch_watcher, daemon=True).start()
+    threading.Thread(target=_switch_watcher,
+                     args=(cfg["switch"]["debounce_ms"],),
+                     daemon=True).start()
 
     det = Detector(cfg)
     last_detection = 0
     last_image_cleanup = 0
     last_opening_hours_log = None
+
+    # Initial AE lock — sets stable exposure/AWB for the current light conditions.
+    hardware.relock_camera_exposure(cam, cfg["camera"]["ae_settle_seconds"])
+    last_ae_relock = time.time()
+    last_telemetry = 0
 
     try:
         log.info("Main loop starting")
@@ -156,6 +173,20 @@ def run():
             if time.time() - last_image_cleanup > 86400:
                 _cleanup_old_images(cfg["images"]["retention_days"])
                 last_image_cleanup = time.time()
+
+            # Periodic AE re-lock — keeps up with changing daylight.
+            # After re-lock, force reference-frame refresh so the detector doesn't see
+            # the exposure step as "motion".
+            if (time.time() - last_ae_relock) > cfg["camera"]["ae_relock_interval_seconds"]:
+                hardware.relock_camera_exposure(cam, cfg["camera"]["ae_settle_seconds"])
+                last_ae_relock = time.time()
+                det.prev_frame = None  # force ref refresh on next detect()
+                raw.truncate(0); raw.seek(0)
+
+            # Periodic telemetry log (cheap: ~1ms of vcgencmd calls).
+            if (time.time() - last_telemetry) > cfg["telemetry"]["log_interval_seconds"]:
+                log.info("Telemetry: %s", hardware.read_telemetry())
+                last_telemetry = time.time()
 
             image = frame.array
             resized, gray = det.process_frame(image)

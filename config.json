@@ -45,6 +45,16 @@
     "resolution_h": 480,
     "framerate": 30,
     "vflip": true,
-    "hflip": true
+    "hflip": true,
+    "ae_relock_interval_seconds": 300,
+    "ae_settle_seconds": 3
+  },
+  "telemetry": {
+    "log_interval_seconds": 60
+  },
+  "switch": {
+    "pin": 27,
+    "active_low": true,
+    "debounce_ms": 50
   }
 }

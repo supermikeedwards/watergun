@@ -49,7 +49,7 @@ INDEX_HTML = """<!doctype html>
   <div class="card">
    <div class="status" id="stat2">…</div>
    <button id="toggle" class="big on" onclick="toggle()">…</button>
-   <p style="color:#888;font-size:12px;margin-top:12px">Stop = water off (detection keeps running), same as the physical switch.</p>
+   <p style="color:#888;font-size:12px;margin-top:12px">AND-gate: web UI and physical switch must <b>both</b> be ON for water to spray. Detection keeps running regardless.</p>
   </div>
  </section>
  <section id="cfg" style="display:none">
@@ -62,7 +62,9 @@ function show(t){for(const s of ['logs','ctrl','cfg'])document.getElementById(s)
  document.getElementById({logs:'tLogs',ctrl:'tCtrl',cfg:'tCfg'}[t]).classList.add('active');}
 async function refresh(){
  const s=await (await fetch('/api/status')).json();
- const badge=`<span class="pill ${s.water_enabled?'on':'off'}">${s.water_enabled?'WATER ON':'WATER OFF'}</span>
+ const badge=`<span class="pill ${s.armed?'on':'off'}">${s.armed?'ARMED':'NOT ARMED'}</span>
+  <span class="pill ${s.water_enabled?'on':'off'}">WEB ${s.water_enabled?'ON':'OFF'}</span>
+  <span class="pill ${s.switch_enabled?'on':'off'}">SWITCH ${s.switch_enabled?'ON':'OFF'}</span>
   <span class="pill ${s.mode==='active'?'on':'sleep'}">${s.mode.toUpperCase()}</span>`;
  document.getElementById('stat').innerHTML=badge;
  document.getElementById('stat2').innerHTML=badge+`<br><small>last detection: ${s.last_detection||'—'} • last spray: ${s.last_spray||'—'}</small>`;
@@ -112,6 +114,8 @@ def index():
 def api_status():
     return jsonify({
         "water_enabled": state.water_enabled,
+        "switch_enabled": state.switch_enabled,
+        "armed": state.armed,
         "mode": state.mode,
         "last_detection": state.last_detection,
         "last_spray": state.last_spray,
