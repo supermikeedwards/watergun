@@ -1,0 +1,6 @@
+opencv-python-headless
+picamera
+RPi.GPIO
+adafruit-circuitpython-servokit
+imutils
+Flask

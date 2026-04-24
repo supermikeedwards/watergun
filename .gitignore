@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+logs/
+motion_images/
+servo_calibration.txt
+.venv/

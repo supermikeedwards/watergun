@@ -1,0 +1,50 @@
+{
+  "opening_hours": {
+    "timezone": "Europe/Paris",
+    "start": "08:00",
+    "end": "18:00",
+    "off_hours_cycle_seconds": 300
+  },
+  "detection": {
+    "motion_threshold": 35,
+    "min_area": 800,
+    "stationary_threshold": 30,
+    "min_positions_for_stationary": 5,
+    "min_acquire_time": 2.0,
+    "min_detection_interval": 3,
+    "ref_frame_time_limit": 120,
+    "tracking_timeout": 15,
+    "max_track_failures": 3,
+    "use_shape_filtering": true,
+    "min_aspect_ratio": 0.3,
+    "max_aspect_ratio": 3.0,
+    "min_solidity": 0.3
+  },
+  "spray": {
+    "spray_duration": 0.5,
+    "sweep_iterations": 5,
+    "servo_trigger_sweep": 20,
+    "water_jet_angle_offset": 5,
+    "post_cycle_wait_seconds": 2
+  },
+  "web": {
+    "host": "0.0.0.0",
+    "port": 8080
+  },
+  "images": {
+    "save_detections": true,
+    "jpeg_quality": 80,
+    "retention_days": 15
+  },
+  "logging": {
+    "max_bytes": 1048576,
+    "backup_count": 5
+  },
+  "camera": {
+    "resolution_w": 640,
+    "resolution_h": 480,
+    "framerate": 30,
+    "vflip": true,
+    "hflip": true
+  }
+}
