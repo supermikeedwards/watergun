@@ -26,10 +26,9 @@ First time:
 ```bash
 cd ~
 git clone https://github.com/supermikeedwards/watergun.git
-mv watergun-repo watergun 2>/dev/null || true   # folder name for systemd unit
 cd watergun
 ```
-*(If you cloned into a different directory name, adjust `WorkingDirectory=` in `systemd/watergun.service`.)*
+*(If your Pi login isn't `pi` or you clone elsewhere, update `User=` and `WorkingDirectory=` in `systemd/watergun.service` before step 4.)*
 
 Subsequent updates:
 ```bash
