@@ -8,12 +8,15 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CALIBRATION_FILE = os.path.join(BASE_DIR, "servo_calibration.txt")
 
 DEFAULTS = {
-    "SERVO_X_CENTER": 90.0,
-    "SERVO_Y_CENTER": 90.0,
-    "SERVO_X_MIN_ANGLE": 30.0,
-    "SERVO_X_MAX_ANGLE": 150.0,
-    "SERVO_Y_MIN_ANGLE": 30.0,
-    "SERVO_Y_MAX_ANGLE": 150.0,
+    # Last-known-working values from the Pi deployment (2026-04-24 backup).
+    # Kept here so a missing servo_calibration.txt falls back to a usable
+    # calibration rather than generic 90/90 factory defaults.
+    "SERVO_X_CENTER": 92.0,
+    "SERVO_Y_CENTER": 48.0,
+    "SERVO_X_MIN_ANGLE": 64.0,
+    "SERVO_X_MAX_ANGLE": 126.0,
+    "SERVO_Y_MIN_ANGLE": 36.0,
+    "SERVO_Y_MAX_ANGLE": 68.0,
 }
 
 

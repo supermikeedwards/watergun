@@ -73,6 +73,19 @@ def relay_off():
     GPIO.output(RELAY_PIN, GPIO.LOW)
 
 
+def short_burst(duration_s):
+    """Open the relay for duration_s seconds, then close. Used by the calibration
+    'Fire test shot' endpoint. Safety: caller is responsible for gating this (see
+    web.py — only callable while state.calibrating=True)."""
+    duration_s = max(0.05, min(2.0, float(duration_s)))  # clamp 50ms..2s
+    log.info("Calibration short burst: %.2fs", duration_s)
+    try:
+        relay_on()
+        time.sleep(duration_s)
+    finally:
+        relay_off()
+
+
 def read_switch():
     """Return True when the physical switch is in the 'armed' position.
     active_low: LOW reading (0) means armed. active_high: HIGH (1) means armed.

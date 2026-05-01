@@ -145,6 +145,10 @@ def run():
     hardware.relock_camera_exposure(cam, cfg["camera"]["ae_settle_seconds"])
     last_ae_relock = time.time()
     last_telemetry = 0
+    last_stream_publish = 0.0
+    stream_fps = cfg.get("calibration", {}).get("stream_fps", 5)
+    stream_quality = cfg.get("calibration", {}).get("stream_jpeg_quality", 60)
+    stream_interval = 1.0 / max(1, stream_fps)
 
     try:
         log.info("Main loop starting")
@@ -191,6 +195,29 @@ def run():
             image = frame.array
             resized, gray = det.process_frame(image)
             raw.truncate(0); raw.seek(0)
+
+            # Publish the latest frame for the web UI MJPEG stream (calibration tab).
+            # Always publish (not just in calibration mode) so the stream works as soon as
+            # the user opens the tab. Rate-limited to avoid burning CPU on JPEG encoding.
+            now = time.time()
+            if (now - last_stream_publish) >= stream_interval:
+                try:
+                    ok, buf = cv2.imencode(".jpg", resized, [cv2.IMWRITE_JPEG_QUALITY, stream_quality])
+                    if ok:
+                        with state.lock:
+                            state.latest_jpeg = buf.tobytes()
+                            state.latest_jpeg_ts = now
+                    last_stream_publish = now
+                except Exception as e:
+                    log.warning("Stream encode failed: %s", e)
+
+            # Calibration mode: pause detection/tracking/spray, keep camera + stream alive.
+            if state.calibrating:
+                if det.tracking:
+                    det.reset()
+                # Force a fresh reference frame on exit from calibration
+                det.prev_frame = None
+                continue
 
             if det.tracking:
                 r = det.update_tracking(resized)

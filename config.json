@@ -56,5 +56,10 @@
     "pin": 27,
     "active_low": true,
     "debounce_ms": 50
+  },
+  "calibration": {
+    "stream_fps": 5,
+    "stream_jpeg_quality": 60,
+    "default_burst_ms": 300
   }
 }
