@@ -4,3 +4,9 @@ logs/
 motion_images/
 servo_calibration.txt
 .venv/
+.venv-validate/
+# Curated validation set — local only; commit only test_images/README.md
+test_images/*
+!test_images/README.md
+# Detector validation outputs (annotated images + JSON/TXT reports)
+validation_output/

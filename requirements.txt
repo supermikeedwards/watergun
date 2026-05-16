@@ -1,6 +1,14 @@
+# Pi 3 (production) install. Run `pip3 install --user -r requirements.txt`.
 opencv-python-headless
 picamera
 RPi.GPIO
 adafruit-circuitpython-servokit
 imutils
 Flask
+numpy
+# TFLite runtime for the bird detector (§10 redesign).
+# tflite-runtime ships armv7l/aarch64 wheels for the Pi. If installation fails
+# (e.g. unsupported Python version), fall back to: pip install tensorflow
+# The detector module auto-falls-back to tensorflow.lite.Interpreter when
+# tflite_runtime isn't importable (used for laptop validation as well).
+tflite-runtime

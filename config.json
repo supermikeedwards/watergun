@@ -20,6 +20,25 @@
     "max_aspect_ratio": 3.0,
     "min_solidity": 0.3
   },
+  "bird_detection": {
+    "enabled": true,
+    "legacy_motion_only": false,
+    "model_path": "models/ssdlite_mobiledet_coco_qat_postprocess.tflite",
+    "labels_path": "models/coco_labels.txt",
+    "bird_class_name": "bird",
+    "bird_class_id": null,
+    "confidence_threshold": 0.4,
+    "roi_padding_px": 32,
+    "max_rois_per_frame": 5,
+    "full_frame_sweep_interval_seconds": 3,
+    "motion_stage": {
+      "history": 500,
+      "var_threshold": 16,
+      "detect_shadows": false,
+      "min_area_px": 600,
+      "max_area_px": 60000
+    }
+  },
   "spray": {
     "spray_duration": 0.5,
     "sweep_iterations": 5,

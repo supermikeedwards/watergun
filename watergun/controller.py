@@ -140,6 +140,7 @@ def run():
     last_detection = 0
     last_image_cleanup = 0
     last_opening_hours_log = None
+    was_calibrating = False  # tracks transitions in/out of calibration mode for BG reset
 
     # Initial AE lock — sets stable exposure/AWB for the current light conditions.
     hardware.relock_camera_exposure(cam, cfg["camera"]["ae_settle_seconds"])
@@ -179,12 +180,12 @@ def run():
                 last_image_cleanup = time.time()
 
             # Periodic AE re-lock — keeps up with changing daylight.
-            # After re-lock, force reference-frame refresh so the detector doesn't see
+            # After re-lock, force motion-background reset so the detector doesn't see
             # the exposure step as "motion".
             if (time.time() - last_ae_relock) > cfg["camera"]["ae_relock_interval_seconds"]:
                 hardware.relock_camera_exposure(cam, cfg["camera"]["ae_settle_seconds"])
                 last_ae_relock = time.time()
-                det.prev_frame = None  # force ref refresh on next detect()
+                det.reset_motion_background()  # MOG2 reset (or legacy ref-frame clear)
                 raw.truncate(0); raw.seek(0)
 
             # Periodic telemetry log (cheap: ~1ms of vcgencmd calls).
@@ -193,7 +194,7 @@ def run():
                 last_telemetry = time.time()
 
             image = frame.array
-            resized, gray = det.process_frame(image)
+            resized = det.process_frame(image)
             raw.truncate(0); raw.seek(0)
 
             # Publish the latest frame for the web UI MJPEG stream (calibration tab).
@@ -215,9 +216,17 @@ def run():
             if state.calibrating:
                 if det.tracking:
                     det.reset()
-                # Force a fresh reference frame on exit from calibration
-                det.prev_frame = None
+                if not was_calibrating:
+                    # On entering calibration, drop the learned background so the user's
+                    # manual jog motion doesn't poison the model.
+                    det.reset_motion_background()
+                    was_calibrating = True
                 continue
+            if was_calibrating:
+                # On exit from calibration, reset again so the post-calibration scene
+                # gets re-learned from a clean slate.
+                det.reset_motion_background()
+                was_calibrating = False
 
             if det.tracking:
                 r = det.update_tracking(resized)
@@ -242,10 +251,10 @@ def run():
                 # Cooldown between detections
                 if (time.time() - last_detection) < cfg["detection"]["min_detection_interval"]:
                     continue
-                motion = det.detect(gray)
-                if motion:
-                    cx, cy, bbox, area = motion
-                    log.info("Motion: (%d,%d) area=%d", cx, cy, area)
+                detection = det.detect(resized)
+                if detection:
+                    cx, cy, bbox, score = detection
+                    log.info("Detection: (%d,%d) score=%.2f", cx, cy, score)
                     det.start_tracking(resized, bbox)
     except KeyboardInterrupt:
         log.info("KeyboardInterrupt")
