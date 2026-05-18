@@ -433,7 +433,9 @@ class Detector:
         log.info("Tracking reset")
 
     def start_tracking(self, frame, bbox):
-        self.tracker = cv2.legacy.TrackerKCF_create()
+        # cv2.legacy lives in opencv-contrib-python; on the pip headless build
+        # the modern API in the main cv2 namespace is the right one.
+        self.tracker = cv2.TrackerKCF.create()
         if self.tracker.init(frame, bbox):
             self.tracking = True
             self.track_start = time.time()
