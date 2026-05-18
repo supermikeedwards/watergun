@@ -37,20 +37,25 @@ def _create_kcf_tracker():
 
     OpenCV's tracker module has been reorganised several times across 4.x. Depending on the
     installed wheel, the KCF tracker can live in any of these places:
+      * cv2.legacy.TrackerKCF_create() — opencv-contrib-python's legacy module (PREFERRED)
       * cv2.TrackerKCF.create()        — modern main-namespace class (some 4.5+ builds)
       * cv2.TrackerKCF_create()        — flat function form (some builds)
-      * cv2.legacy.TrackerKCF_create() — opencv-contrib-python's legacy module
 
-    We probe in that order. If none is available the build is missing the tracking module
-    entirely and the user needs opencv-contrib-python(-headless).
+    We try `legacy.TrackerKCF_create` FIRST because its `init(frame, bbox)` returns a bool
+    (True on success, False on failure). The modern `cv2.TrackerKCF.create()` API has init()
+    return None / void, which makes `if tracker.init(...):` always false and breaks the
+    "did init succeed?" check throughout the codebase. See worklog 2026-05-18 entry.
+
+    If none is available the build is missing the tracking module entirely and the user
+    needs opencv-contrib-python(-headless).
     """
-    if hasattr(cv2, "TrackerKCF"):
-        return cv2.TrackerKCF.create()
-    if hasattr(cv2, "TrackerKCF_create"):
-        return cv2.TrackerKCF_create()
     legacy = getattr(cv2, "legacy", None)
     if legacy is not None and hasattr(legacy, "TrackerKCF_create"):
         return legacy.TrackerKCF_create()
+    if hasattr(cv2, "TrackerKCF") and hasattr(cv2.TrackerKCF, "create"):
+        return cv2.TrackerKCF.create()
+    if hasattr(cv2, "TrackerKCF_create"):
+        return cv2.TrackerKCF_create()
     raise RuntimeError(
         "KCF tracker not found in cv2 build. Install opencv-contrib-python-headless "
         "(or opencv-contrib-python) — the non-contrib build dropped KCF in 4.5.x."
@@ -460,17 +465,23 @@ class Detector:
 
     def start_tracking(self, frame, bbox):
         self.tracker = _create_kcf_tracker()
-        if self.tracker.init(frame, bbox):
-            self.tracking = True
-            self.track_start = time.time()
-            self.first_acquired = time.time()
-            self.track_failures = 0
-            self.positions = []
-            self.initial_position = None
-            log.info("Tracker initialized at %s", bbox)
-            return True
-        log.warning("Tracker init failed")
-        return False
+        # init() returns bool on legacy API (True=ok), None on modern API (void).
+        # We treat None as "assume success" — failures will surface on update() instead.
+        init_result = self.tracker.init(frame, bbox)
+        if init_result is False:
+            log.warning(
+                "Tracker init returned False (bbox=%s frame=%sx%s dtype=%s)",
+                bbox, frame.shape[1], frame.shape[0], frame.dtype,
+            )
+            return False
+        self.tracking = True
+        self.track_start = time.time()
+        self.first_acquired = time.time()
+        self.track_failures = 0
+        self.positions = []
+        self.initial_position = None
+        log.info("Tracker initialized at %s (init_result=%s)", bbox, init_result)
+        return True
 
     def update_tracking(self, frame):
         """Returns (center_x, center_y) on success, None on transient failure,
