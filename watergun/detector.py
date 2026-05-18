@@ -31,6 +31,32 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
+
+def _create_kcf_tracker():
+    """Create a KCF tracker, robust to opencv-python vs opencv-contrib-python builds.
+
+    OpenCV's tracker module has been reorganised several times across 4.x. Depending on the
+    installed wheel, the KCF tracker can live in any of these places:
+      * cv2.TrackerKCF.create()        — modern main-namespace class (some 4.5+ builds)
+      * cv2.TrackerKCF_create()        — flat function form (some builds)
+      * cv2.legacy.TrackerKCF_create() — opencv-contrib-python's legacy module
+
+    We probe in that order. If none is available the build is missing the tracking module
+    entirely and the user needs opencv-contrib-python(-headless).
+    """
+    if hasattr(cv2, "TrackerKCF"):
+        return cv2.TrackerKCF.create()
+    if hasattr(cv2, "TrackerKCF_create"):
+        return cv2.TrackerKCF_create()
+    legacy = getattr(cv2, "legacy", None)
+    if legacy is not None and hasattr(legacy, "TrackerKCF_create"):
+        return legacy.TrackerKCF_create()
+    raise RuntimeError(
+        "KCF tracker not found in cv2 build. Install opencv-contrib-python-headless "
+        "(or opencv-contrib-python) — the non-contrib build dropped KCF in 4.5.x."
+    )
+
+
 # Pi 3 uses tflite_runtime; laptop dev/validation falls back to ai_edge_litert
 # (Google's modern rebrand with Py3.12 wheels) or full tensorflow as last resort.
 _TFLITE_BACKEND = None
@@ -433,9 +459,7 @@ class Detector:
         log.info("Tracking reset")
 
     def start_tracking(self, frame, bbox):
-        # cv2.legacy lives in opencv-contrib-python; on the pip headless build
-        # the modern API in the main cv2 namespace is the right one.
-        self.tracker = cv2.TrackerKCF.create()
+        self.tracker = _create_kcf_tracker()
         if self.tracker.init(frame, bbox):
             self.tracking = True
             self.track_start = time.time()
