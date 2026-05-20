@@ -143,30 +143,61 @@ async function refresh(){
  const pre=document.getElementById('log');pre.textContent=l;pre.scrollTop=pre.scrollHeight;
 }
 async function toggle(){await fetch('/api/toggle',{method:'POST'});refresh();}
+// Render a leaf as an input. Tag with data-type so saveCfg can coerce correctly.
+function leafInput(path,v){
+ const t=v===null?'null':Array.isArray(v)?'array':typeof v;
+ const display=v===null?'null':(t==='string'?v:JSON.stringify(v));
+ const esc=String(display).replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+ return `<label>${path}</label><input data-path="${path}" data-type="${t}" value="${esc}">`;
+}
+function renderObj(prefix,obj){
+ let h='';
+ for(const [k,v] of Object.entries(obj)){
+  const path=prefix?`${prefix}.${k}`:k;
+  if(v!==null&&typeof v==='object'&&!Array.isArray(v)){
+   h+=renderObj(path,v);
+  }else{
+   h+=leafInput(path,v);
+  }
+ }
+ return h;
+}
 async function loadCfg(){
  const c=await (await fetch('/api/config')).json();
  let h='';
  for(const [sec,obj] of Object.entries(c)){
   h+=`<h3 style="margin-top:14px">${sec}</h3>`;
-  for(const [k,v] of Object.entries(obj)){
-   const id=`${sec}__${k}`;
-   h+=`<label>${k}</label><input id="${id}" value="${typeof v==='object'?JSON.stringify(v):v}">`;
+  if(obj!==null&&typeof obj==='object'&&!Array.isArray(obj)){
+   h+=renderObj(sec,obj);
+  }else{
+   h+=leafInput(sec,obj);
   }
  }
  h+='<button class="big on" style="margin-top:16px" onclick="saveCfg()">Save (restart service to apply hardware/camera changes)</button>';
  document.getElementById('cfgForm').innerHTML=h;
 }
+function setByPath(o,path,v){
+ const p=path.split('.');
+ for(let i=0;i<p.length-1;i++)o=o[p[i]];
+ o[p[p.length-1]]=v;
+}
 async function saveCfg(){
  const c=await (await fetch('/api/config')).json();
- for(const [sec,obj] of Object.entries(c))for(const k of Object.keys(obj)){
-  const el=document.getElementById(`${sec}__${k}`);if(!el)continue;
-  let v=el.value;
-  if(typeof obj[k]==='number')v=Number(v);
-  else if(typeof obj[k]==='boolean')v=(v==='true'||v===true);
-  c[sec][k]=v;
+ for(const el of document.querySelectorAll('#cfgForm input[data-path]')){
+  const path=el.dataset.path;const t=el.dataset.type;const raw=el.value;
+  let v;
+  try{
+   if(t==='number'){v=Number(raw);if(Number.isNaN(v))throw new Error('not a number');}
+   else if(t==='boolean'){if(raw==='true'||raw==='false')v=(raw==='true');else throw new Error('expected true/false');}
+   else if(t==='null'){if(raw===''||raw==='null')v=null;else if(!Number.isNaN(Number(raw)))v=Number(raw);else v=raw;}
+   else if(t==='array'){v=JSON.parse(raw);if(!Array.isArray(v))throw new Error('expected array');}
+   else{v=raw;}
+  }catch(e){alert(`Invalid value at ${path}: ${e.message}`);return;}
+  setByPath(c,path,v);
  }
  const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});
- alert(r.ok?'Saved. Detection params apply immediately. Restart service for camera/hardware changes.':'Save failed');
+ if(r.ok){alert('Saved. Detection params apply immediately. Restart service for camera/hardware changes.');}
+ else{const j=await r.json().catch(()=>({}));alert('Save rejected: '+(j.error||r.status));}
 }
 
 // --- Calibration tab ---
@@ -278,6 +309,11 @@ def api_config():
     if request.method == "GET":
         return jsonify(config.get())
     new_cfg = request.get_json(force=True)
+    try:
+        config.validate_against(new_cfg, config.get())
+    except config.ConfigShapeError as e:
+        log.warning("Web UI config save rejected: %s", e)
+        return jsonify({"error": str(e)}), 400
     config.save(new_cfg)
     log.info("Web UI config saved")
     return jsonify({"ok": True})
