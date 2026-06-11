@@ -5,39 +5,29 @@
     "end": "18:00",
     "off_hours_cycle_seconds": 300
   },
-  "detection": {
-    "motion_threshold": 35,
-    "min_area": 800,
-    "stationary_threshold": 30,
-    "min_positions_for_stationary": 5,
-    "min_acquire_time": 2.0,
-    "min_detection_interval": 3,
-    "ref_frame_time_limit": 120,
-    "tracking_timeout": 15,
-    "max_track_failures": 3,
-    "use_shape_filtering": true,
-    "min_aspect_ratio": 0.3,
-    "max_aspect_ratio": 3.0,
-    "min_solidity": 0.3
-  },
-  "bird_detection": {
-    "enabled": true,
-    "legacy_motion_only": false,
-    "model_path": "models/ssdlite_mobiledet_coco_qat_postprocess.tflite",
-    "labels_path": "models/coco_labels.txt",
-    "bird_class_name": "bird",
-    "bird_class_id": null,
+  "oak": {
+    "device_ip": "192.168.10.2",
+    "model_blob": "models/yolov8n_coco_640x640.blob",
+    "model_input_w": 640,
+    "model_input_h": 640,
+    "fps": 30,
+    "num_classes": 80,
+    "coord_size": 4,
+    "anchors": [],
+    "anchor_masks": {},
+    "iou_threshold": 0.5,
     "confidence_threshold": 0.4,
-    "roi_padding_px": 32,
-    "max_rois_per_frame": 5,
-    "full_frame_sweep_interval_seconds": 3,
-    "motion_stage": {
-      "history": 500,
-      "var_threshold": 16,
-      "detect_shadows": false,
-      "min_area_px": 600,
-      "max_area_px": 60000
-    }
+    "tracker_labels": ["bird", "person"]
+  },
+  "detection": {
+    "min_acquire_time": 2.0,
+    "min_positions_for_stationary": 5,
+    "stationary_threshold_norm": 0.05,
+    "min_detection_interval": 3
+  },
+  "aim": {
+    "invert_x": true,
+    "invert_y": true
   },
   "spray": {
     "spray_duration": 0.5,
@@ -59,15 +49,6 @@
     "max_bytes": 1048576,
     "backup_count": 5
   },
-  "camera": {
-    "resolution_w": 640,
-    "resolution_h": 480,
-    "framerate": 30,
-    "vflip": true,
-    "hflip": true,
-    "ae_relock_interval_seconds": 300,
-    "ae_settle_seconds": 3
-  },
   "telemetry": {
     "log_interval_seconds": 60
   },
@@ -80,5 +61,13 @@
     "stream_fps": 5,
     "stream_jpeg_quality": 60,
     "default_burst_ms": 300
+  },
+  "kids_mode": {
+    "enabled": false,
+    "person_confidence_threshold": 0.45,
+    "stationary_seconds": 0.5,
+    "spray_duration": 1.0,
+    "post_cycle_wait_seconds": 0.5,
+    "sweep_enabled": false
   }
 }

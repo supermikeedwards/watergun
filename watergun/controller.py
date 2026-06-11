@@ -1,20 +1,29 @@
-"""Main controller: orchestrates hardware + detector + state machine.
+"""Main controller: orchestrates Pi hardware + OAK detector + state machine.
 
-State machine:
-  - "active"     : within opening hours -> fast detection cycle
-  - "off_hours"  : outside opening hours -> sleep long intervals
-  - "stopped"    : water disabled (via switch or web UI)  [note: this is just water_enabled=False]
+The Pi 3 is controller-only. The OAK-D-POE does camera + YOLOv8n inference +
+object tracking on its Myriad X VPU and streams results here over the dedicated
+Ethernet/PoE link. This loop consumes tracklets, decides when to fire, and drives
+the servos + solenoid.
+
+Operating modes (mutually exclusive, toggled from the web UI via state.kids_mode):
+  - bird mode (default): target COCO class "bird", 2 s stationary dwell.
+  - kids mode          : target COCO class "person", 0.5 s dwell, more generous spray.
+
+State machine (opening hours):
+  - "active"    : within opening hours -> detect + spray.
+  - "off_hours" : outside opening hours -> sleep in long intervals to save power.
+Water arming is an AND-gate of state.water_enabled (web UI) and state.switch_enabled
+(physical switch); see state.armed.
 """
-import cv2
 import logging
 import os
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from . import config, hardware, calibration
-from .detector import Detector
+from .detector import OakDetector
 from .state import state
 
 log = logging.getLogger(__name__)
@@ -50,11 +59,9 @@ def _cleanup_old_images(retention_days):
 
 
 def _switch_watcher(debounce_ms):
-    """Daemon: mirrors the physical switch's current (debounced) level into state.switch_enabled.
-    This is an AND-gate with state.water_enabled (web UI), so both must be True to spray.
-    """
+    """Daemon: mirrors the physical switch's current (debounced) level into
+    state.switch_enabled. AND-gated with state.water_enabled (web UI)."""
     debounce_s = debounce_ms / 1000.0
-    # Seed with current physical state so boot-time flags match reality.
     try:
         state.switch_enabled = hardware.read_switch()
     except Exception:
@@ -78,48 +85,62 @@ def _switch_watcher(debounce_ms):
         time.sleep(0.02)
 
 
-def _aim_and_spray(cx, cy, cal, cfg):
-    """Map target -> servo angles, spray with sweep. Re-checks water_enabled each step so
-    switch/web Stop during a cycle cuts the spray immediately."""
+def _aim_and_spray(nx, ny, cal, cfg, spray_duration, sweep_enabled):
+    """Map a normalized target (0..1) -> servo angles, then spray.
+    Re-checks state.armed each step so switch/web Stop mid-cycle cuts the spray.
+
+    nx/ny are normalized centroid coords from the OAK (0..1). Aim inversion is
+    config-driven (oak.aim_invert_x / aim_invert_y) since the OAK has no vflip/hflip
+    and its mounting orientation must be calibrated on real hardware."""
     sp = cfg["spray"]
-    cam = cfg["camera"]
-    # Keep original inversion (per Mike: current aim works)
-    nx = 1.0 - (cx / cam["resolution_w"])
-    ny = 1.0 - (cy / cam["resolution_h"])
+    aim = cfg.get("aim", {})
+    if aim.get("invert_x", True):
+        nx = 1.0 - nx
+    if aim.get("invert_y", True):
+        ny = 1.0 - ny
     ax = cal["SERVO_X_MIN_ANGLE"] + nx * (cal["SERVO_X_MAX_ANGLE"] - cal["SERVO_X_MIN_ANGLE"])
     ay = cal["SERVO_Y_MIN_ANGLE"] + ny * (cal["SERVO_Y_MAX_ANGLE"] - cal["SERVO_Y_MIN_ANGLE"])
     ay += sp["water_jet_angle_offset"]
     ax = max(0, min(180, ax))
     ay = max(0, min(180, ay))
-    log.info("Aiming: target=(%d,%d) -> angles=(%.1f,%.1f)", cx, cy, ax, ay)
+    log.info("Aiming: target=(%.3f,%.3f) -> angles=(%.1f,%.1f)", nx, ny, ax, ay)
     hardware.set_servo(hardware.SERVO_X_CHANNEL, ax)
     hardware.set_servo(hardware.SERVO_Y_CHANNEL, ay)
 
     if not state.armed:
         log.info("Not armed (water_enabled=%s switch_enabled=%s) — aim only, no spray",
                  state.water_enabled, state.switch_enabled)
-        time.sleep(sp["spray_duration"])
+        time.sleep(spray_duration)
         return
 
-    log.info("Spray START")
+    log.info("Spray START (duration=%.2fs sweep=%s)", spray_duration, sweep_enabled)
     hardware.relay_on()
     state.last_spray = datetime.now().isoformat(timespec="seconds")
-    left = max(0, ax - sp["servo_trigger_sweep"])
-    right = min(180, ax + sp["servo_trigger_sweep"])
-    step_sleep = sp["spray_duration"] / (sp["sweep_iterations"] * 2)
     try:
-        for i in range(sp["sweep_iterations"]):
-            if not state.armed or state.exit_flag:
-                log.info("Spray interrupted at iteration %d", i)
-                break
-            hardware.set_servo(hardware.SERVO_X_CHANNEL, left)
-            if not state.armed or state.exit_flag:
-                break
-            time.sleep(step_sleep)
-            hardware.set_servo(hardware.SERVO_X_CHANNEL, right)
-            if not state.armed or state.exit_flag:
-                break
-            time.sleep(step_sleep)
+        if not sweep_enabled:
+            # Single-point spray (kids mode default): just hold the jet on target.
+            end = time.time() + spray_duration
+            while time.time() < end:
+                if not state.armed or state.exit_flag:
+                    log.info("Spray interrupted")
+                    break
+                time.sleep(min(0.05, end - time.time()))
+        else:
+            left = max(0, ax - sp["servo_trigger_sweep"])
+            right = min(180, ax + sp["servo_trigger_sweep"])
+            step_sleep = spray_duration / (sp["sweep_iterations"] * 2)
+            for i in range(sp["sweep_iterations"]):
+                if not state.armed or state.exit_flag:
+                    log.info("Spray interrupted at iteration %d", i)
+                    break
+                hardware.set_servo(hardware.SERVO_X_CHANNEL, left)
+                if not state.armed or state.exit_flag:
+                    break
+                time.sleep(step_sleep)
+                hardware.set_servo(hardware.SERVO_X_CHANNEL, right)
+                if not state.armed or state.exit_flag:
+                    break
+                time.sleep(step_sleep)
     finally:
         hardware.relay_off()
         log.info("Spray END")
@@ -128,7 +149,7 @@ def _aim_and_spray(cx, cy, cal, cfg):
 def run():
     cfg = config.load()
     cal = calibration.load()
-    cam, raw = hardware.init(cfg["camera"], cfg.get("switch"))
+    hardware.init(cfg.get("switch"))
     hardware.set_servo(hardware.SERVO_X_CHANNEL, cal["SERVO_X_CENTER"])
     hardware.set_servo(hardware.SERVO_Y_CHANNEL, cal["SERVO_Y_CENTER"])
 
@@ -136,126 +157,117 @@ def run():
                      args=(cfg["switch"]["debounce_ms"],),
                      daemon=True).start()
 
-    det = Detector(cfg)
+    det = OakDetector(cfg)
+    det.start()
+
     last_detection = 0
     last_image_cleanup = 0
-    last_opening_hours_log = None
-    was_calibrating = False  # tracks transitions in/out of calibration mode for BG reset
-
-    # Initial AE lock — sets stable exposure/AWB for the current light conditions.
-    hardware.relock_camera_exposure(cam, cfg["camera"]["ae_settle_seconds"])
-    last_ae_relock = time.time()
     last_telemetry = 0
     last_stream_publish = 0.0
+    was_calibrating = False
+
     stream_fps = cfg.get("calibration", {}).get("stream_fps", 5)
     stream_quality = cfg.get("calibration", {}).get("stream_jpeg_quality", 60)
     stream_interval = 1.0 / max(1, stream_fps)
 
     try:
         log.info("Main loop starting")
-        for frame in cam.capture_continuous(raw, format="bgr", use_video_port=True):
-            if state.exit_flag:
-                break
-            # Hot-reload config if web UI saved it
+        while not state.exit_flag:
+            # Hot-reload config if the web UI saved it.
             if config.consume_dirty():
                 cfg = config.load()
                 det.cfg = cfg
                 log.info("Config reloaded")
 
-            # Opening hours state machine
+            # Opening-hours state machine.
             active = _in_opening_hours(cfg)
             new_mode = "active" if active else "off_hours"
             if new_mode != state.mode:
                 state.mode = new_mode
                 log.info("Mode -> %s", new_mode)
             if not active:
-                raw.truncate(0); raw.seek(0)
                 log.info("Off-hours: sleeping %ds", cfg["opening_hours"]["off_hours_cycle_seconds"])
                 _sleep_interruptible(cfg["opening_hours"]["off_hours_cycle_seconds"])
                 continue
 
-            # Daily image cleanup
+            # Daily image cleanup.
             if time.time() - last_image_cleanup > 86400:
                 _cleanup_old_images(cfg["images"]["retention_days"])
                 last_image_cleanup = time.time()
 
-            # Periodic AE re-lock — keeps up with changing daylight.
-            # After re-lock, force motion-background reset so the detector doesn't see
-            # the exposure step as "motion".
-            if (time.time() - last_ae_relock) > cfg["camera"]["ae_relock_interval_seconds"]:
-                hardware.relock_camera_exposure(cam, cfg["camera"]["ae_settle_seconds"])
-                last_ae_relock = time.time()
-                det.reset_motion_background()  # MOG2 reset (or legacy ref-frame clear)
-                raw.truncate(0); raw.seek(0)
-
-            # Periodic telemetry log (cheap: ~1ms of vcgencmd calls).
+            # Periodic telemetry log (Pi-side health: temp / clock / throttled).
             if (time.time() - last_telemetry) > cfg["telemetry"]["log_interval_seconds"]:
                 log.info("Telemetry: %s", hardware.read_telemetry())
                 last_telemetry = time.time()
 
-            image = frame.array
-            resized = det.process_frame(image)
-            raw.truncate(0); raw.seek(0)
+            # Pull the latest detections + frame from the OAK.
+            tracklets, frame = det.poll()
 
-            # Publish the latest frame for the web UI MJPEG stream (calibration tab).
-            # Always publish (not just in calibration mode) so the stream works as soon as
-            # the user opens the tab. Rate-limited to avoid burning CPU on JPEG encoding.
+            # Publish the latest frame for the web UI MJPEG stream (rate-limited).
             now = time.time()
             if (now - last_stream_publish) >= stream_interval:
-                try:
-                    ok, buf = cv2.imencode(".jpg", resized, [cv2.IMWRITE_JPEG_QUALITY, stream_quality])
-                    if ok:
-                        with state.lock:
-                            state.latest_jpeg = buf.tobytes()
-                            state.latest_jpeg_ts = now
-                    last_stream_publish = now
-                except Exception as e:
-                    log.warning("Stream encode failed: %s", e)
+                jpeg = det.get_latest_jpeg(stream_quality)
+                if jpeg is not None:
+                    with state.lock:
+                        state.latest_jpeg = jpeg
+                        state.latest_jpeg_ts = now
+                last_stream_publish = now
 
-            # Calibration mode: pause detection/tracking/spray, keep camera + stream alive.
+            # Calibration mode: pause detection/spray, keep stream alive.
             if state.calibrating:
-                if det.tracking:
-                    det.reset()
                 if not was_calibrating:
-                    # On entering calibration, drop the learned background so the user's
-                    # manual jog motion doesn't poison the model.
-                    det.reset_motion_background()
+                    det.reset()
                     was_calibrating = True
+                time.sleep(0.02)
                 continue
             if was_calibrating:
-                # On exit from calibration, reset again so the post-calibration scene
-                # gets re-learned from a clean slate.
-                det.reset_motion_background()
+                det.reset()
                 was_calibrating = False
 
-            if det.tracking:
-                r = det.update_tracking(resized)
-                if r in ("lost", "timeout"):
-                    log.info("Tracking ended: %s", r)
-                    det.reset()
-                    continue
-                if r is None:
-                    continue
-                cx, cy = r
-                if det.is_stationary(cx, cy):
-                    log.info("Target stable at (%d,%d) — firing", cx, cy)
-                    state.last_detection = datetime.now().isoformat(timespec="seconds")
-                    if cfg["images"]["save_detections"]:
-                        _save_image(resized, cx, cy, cfg["images"]["jpeg_quality"])
-                    _aim_and_spray(cx, cy, cal, cfg)
-                    last_detection = time.time()
-                    log.info("Post-cycle wait: %ss", cfg["spray"]["post_cycle_wait_seconds"])
-                    _sleep_interruptible(cfg["spray"]["post_cycle_wait_seconds"])
-                    det.reset()
+            # Cooldown between spray cycles.
+            if (time.time() - last_detection) < cfg["detection"]["min_detection_interval"]:
+                time.sleep(0.01)
+                continue
+
+            # Mode-dependent target selection.
+            kids = state.kids_mode
+            det_cfg = cfg["detection"]
+            if kids:
+                km = cfg["kids_mode"]
+                target_label = "person"
+                conf = km["person_confidence_threshold"]
+                dwell = km["stationary_seconds"]
+                spray_duration = km["spray_duration"]
+                sweep_enabled = km["sweep_enabled"]
+                post_cycle = km["post_cycle_wait_seconds"]
             else:
-                # Cooldown between detections
-                if (time.time() - last_detection) < cfg["detection"]["min_detection_interval"]:
-                    continue
-                detection = det.detect(resized)
-                if detection:
-                    cx, cy, bbox, score = detection
-                    log.info("Detection: (%d,%d) score=%.2f", cx, cy, score)
-                    det.start_tracking(resized, bbox)
+                target_label = "bird"
+                conf = cfg["oak"]["confidence_threshold"]
+                dwell = det_cfg["min_acquire_time"]
+                spray_duration = cfg["spray"]["spray_duration"]
+                sweep_enabled = True
+                post_cycle = cfg["spray"]["post_cycle_wait_seconds"]
+
+            target = det.select_target(tracklets, target_label, conf)
+            if not target:
+                time.sleep(0.01)
+                continue
+
+            det.record(target["id"], target["cx"], target["cy"])
+            if det.is_stationary(target["id"],
+                                 det_cfg["stationary_threshold_norm"],
+                                 dwell,
+                                 det_cfg["min_positions_for_stationary"]):
+                log.info("%s target id=%d stable at (%.3f,%.3f) score=%.2f — firing",
+                         target_label, target["id"], target["cx"], target["cy"], target["score"])
+                state.last_detection = datetime.now().isoformat(timespec="seconds")
+                if cfg["images"]["save_detections"] and frame is not None:
+                    _save_image(frame, target["cx"], target["cy"], cfg["images"]["jpeg_quality"])
+                _aim_and_spray(target["cx"], target["cy"], cal, cfg, spray_duration, sweep_enabled)
+                last_detection = time.time()
+                log.info("Post-cycle wait: %ss", post_cycle)
+                _sleep_interruptible(post_cycle)
+                det.reset()
     except KeyboardInterrupt:
         log.info("KeyboardInterrupt")
     except Exception as e:
@@ -263,12 +275,12 @@ def run():
     finally:
         log.info("Cleaning up")
         state.exit_flag = True
-        hardware.set_servo(hardware.SERVO_X_CHANNEL, cal["SERVO_X_CENTER"])
-        hardware.set_servo(hardware.SERVO_Y_CHANNEL, cal["SERVO_Y_CENTER"])
         try:
-            cam.close()
+            hardware.set_servo(hardware.SERVO_X_CHANNEL, cal["SERVO_X_CENTER"])
+            hardware.set_servo(hardware.SERVO_Y_CHANNEL, cal["SERVO_Y_CENTER"])
         except Exception:
             pass
+        det.close()
         hardware.cleanup()
         log.info("Controller stopped")
 
@@ -279,12 +291,15 @@ def _sleep_interruptible(seconds):
         time.sleep(min(0.5, end - time.time()))
 
 
-def _save_image(frame, cx, cy, quality):
+def _save_image(frame, nx, ny, quality):
+    """Save a detection frame with a marker at the normalized target point."""
     try:
         import cv2
-        p = os.path.join(IMAGE_DIR, f"motion_{int(time.time())}.jpg")
+        h, w = frame.shape[:2]
+        cx, cy = int(nx * w), int(ny * h)
+        p = os.path.join(IMAGE_DIR, f"detection_{int(time.time())}.jpg")
         img = frame.copy()
-        cv2.drawMarker(img, (cx, cy), (0, 0, 255), cv2.MARKER_CROSS, 10, 2)
+        cv2.drawMarker(img, (cx, cy), (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
         cv2.imwrite(p, img, [cv2.IMWRITE_JPEG_QUALITY, quality])
     except Exception as e:
         log.warning("Failed to save image: %s", e)

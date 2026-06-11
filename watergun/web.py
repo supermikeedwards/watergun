@@ -410,9 +410,11 @@ def api_cal_aim():
     duration_ms = int(body.get("duration_ms", 300))
     cal = calibration.load()
     cfg = config.get()
-    # Same aim formula as controller._aim_and_spray (kept in sync on purpose).
-    inv_nx = 1.0 - nx
-    inv_ny = 1.0 - ny
+    # Same aim formula as controller._aim_and_spray (kept in sync on purpose):
+    # inversion is config-driven (oak/aim mounting orientation), defaults to invert both.
+    aim = cfg.get("aim", {})
+    inv_nx = (1.0 - nx) if aim.get("invert_x", True) else nx
+    inv_ny = (1.0 - ny) if aim.get("invert_y", True) else ny
     ax = cal["SERVO_X_MIN_ANGLE"] + inv_nx * (cal["SERVO_X_MAX_ANGLE"] - cal["SERVO_X_MIN_ANGLE"])
     ay = cal["SERVO_Y_MIN_ANGLE"] + inv_ny * (cal["SERVO_Y_MAX_ANGLE"] - cal["SERVO_Y_MIN_ANGLE"])
     ay += cfg["spray"]["water_jet_angle_offset"]

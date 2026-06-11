@@ -23,6 +23,9 @@ class State:
         self.last_detection = None
         self.last_spray = None
 
+        # Operating mode: "birds" | "kids" — mutually exclusive, toggled from web UI
+        self.kids_mode = False
+
         # Calibration mode
         self.calibrating = False
         self.latest_jpeg = None      # latest encoded frame for MJPEG stream (bytes)

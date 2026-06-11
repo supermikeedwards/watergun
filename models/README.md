@@ -1,40 +1,36 @@
 # Models
 
-TFLite models used by the bird detector (worklog §10).
+The detector runs **on the OAK-D-POE** (Intel Myriad X VPU), not on the Pi. The model
+is a MyriadX `.blob`; the Pi never loads it — `depthai` ships it to the device.
 
-## `ssdlite_mobiledet_coco_qat_postprocess.tflite`
+## `yolov8n_coco_640x640.blob`
 
-- **Architecture:** SSDLite + MobileDet (Cortex-A backbone), with built-in NMS post-processing op.
-- **Quantization:** INT8 (QAT — quantization-aware-training).
-- **Input:** 320 × 320 × 3, uint8 RGB.
-- **Output:** standard SSD post-process tuple — boxes (1, 10, 4), classes (1, 10), scores (1, 10), num_detections (1,).
-- **Trained on:** COCO 2017 (90-class label map).
-- **Source:** https://github.com/google-coral/test_data/raw/master/ssdlite_mobiledet_coco_qat_postprocess.tflite
-  (downloaded 2026-05-16; SHA256 `32c486140391eb4dc43fca7113ad392be632dc5366687f2731f73d740678693f`)
-- **Licence:** Apache 2.0 (TensorFlow Object Detection API). Same model is published as the
-  CPU companion to Coral's Edge TPU MobileDet release.
-- **Pi 3 expected latency:** ~589 ms full-frame (per arxiv:2409.16808). On a small ROI crop
-  (e.g. 96×96..192×192 padded by `bird_detection.roi_padding_px`) it's ~150 ms — that's the
-  primary inference path; full-frame sweeps run only every `full_frame_sweep_interval_seconds`.
+- **Architecture:** YOLOv8n (nano), anchor-free.
+- **Input:** 640 × 640 × 3 (set in `config.json` -> `oak.model_input_w/h`).
+- **Classes:** COCO 80-class (YOLO ordering — `person`=0, `bird`=14). The detector resolves
+  target classes **by name** (`watergun/detector.py` -> `COCO_LABELS`), so the numeric index
+  never needs hand-maintaining.
+- **Compiled for:** 6 SHAVE cores (default for the OAK-D-POE Myriad X).
+- **Source:** DepthAI model zoo via `blobconverter` — regenerate with:
 
-## `coco_labels.txt`
+  ```bash
+  python3 tools/fetch_yolov8n_blob.py
+  ```
 
-- 90 lines, one class per line, 0-indexed by line number.
-- Class indices include `n/a` placeholders (lines 12, 26, 29, 30, 45, 66, 68, 69, 71, 83) — these
-  are unused class IDs in the COCO 90-class spec, kept as gaps so the index lines up with the
-  model's output IDs.
-- Bird is at **index 15** (line 16). The detector resolves this dynamically by class name from
-  the labels file — `bird_detection.bird_class_id` in `config.json` is `null` by default and
-  only needed if a future model uses a different label scheme.
-- **Source:** https://github.com/google-coral/test_data/raw/master/coco_labels.txt
+- **Not committed by default** — run the fetch tool once on any internet-connected machine.
+  The `.blob` is a few MB; commit it if you want the Pi to get it via `git pull` instead of
+  running blobconverter on the Pi.
 
-## Replacing the model
+## depthai version note
 
-If validation against the pigeon test set fails (worklog §10.6 pass criteria), options:
+The `.blob` must be compatible with the `depthai` firmware version. We pin `depthai` in
+`requirements.txt` (`>=2.24,<3`). If you bump depthai across a major firmware change,
+re-run `tools/fetch_yolov8n_blob.py` to recompile the blob against the matching OpenVINO version.
 
-1. **Try EfficientDet Lite0 INT8** — slightly slower (~611 ms full-frame on Pi 3) but
-   higher mAP. Drop the file in here, point `bird_detection.model_path` at it, re-run validation.
-2. **Train a custom pigeon classifier** — half-day's work; fine-tune SSDLite on Mike's own
-   cherry-tree photos. Out of scope for the first iteration.
-3. **Switch to Path B** (Coral USB Accelerator) — requires the `_edgetpu.tflite` variant
-   compiled with `edgetpu_compiler`, plus the `pycoral` runtime. See worklog §10.4.
+## Switching models
+
+- **YOLOv8s** for higher accuracy (Q1 in worklog §12.6): fetch `yolov8s_coco_640x640` instead,
+  update `oak.model_blob`. Check FPS on the VPU is still acceptable.
+- **Custom-trained** (pigeon-specific): train YOLOv8n in Ultralytics, export ONNX, convert with
+  `blobconverter.from_onnx(...)`. Keep the 80-class head or retrain the label resolution in
+  `detector.COCO_LABELS`.

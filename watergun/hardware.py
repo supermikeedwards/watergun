@@ -1,18 +1,22 @@
-"""GPIO + servo + camera wrappers. Isolates hardware so other modules stay testable."""
+"""GPIO + servo wrappers for the Pi 3 controller.
+
+The Pi 3 is now controller-only: it owns the servos (PCA9685), the water solenoid
+relay (GPIO17), and the physical arming switch (GPIO27). All camera + inference work
+lives on the OAK-D-POE (see watergun/detector.py), so there is no PiCamera, no
+auto-exposure handling, and no image capture here anymore.
+"""
 import logging
 import time
 
 log = logging.getLogger(__name__)
 
-# These may be unavailable on dev machines; import lazily inside init.
+# Imported lazily inside init() so this module loads on dev machines.
 GPIO = None
 ServoKit = None
-PiCamera = None
-PiRGBArray = None
 
 RELAY_PIN = 17
-EXIT_SWITCH_PIN = 27  # default, overridden by config in init()
-SWITCH_ACTIVE_LOW = True  # default, overridden by config in init()
+EXIT_SWITCH_PIN = 27       # default, overridden by config in init()
+SWITCH_ACTIVE_LOW = True   # default, overridden by config in init()
 SERVO_X_CHANNEL = 0
 SERVO_Y_CHANNEL = 1
 MIN_IMP = [500, 500]
@@ -23,14 +27,12 @@ MAX_ANG = [180, 180]
 _pca = None
 
 
-def init(camera_cfg, switch_cfg=None):
-    """Set up GPIO, servos, and return a camera + raw_capture pair."""
-    global GPIO, ServoKit, PiCamera, PiRGBArray, _pca, EXIT_SWITCH_PIN, SWITCH_ACTIVE_LOW
+def init(switch_cfg=None):
+    """Set up GPIO + servos. No camera — the OAK handles imaging."""
+    global GPIO, ServoKit, _pca, EXIT_SWITCH_PIN, SWITCH_ACTIVE_LOW
     import RPi.GPIO as _gpio
     from adafruit_servokit import ServoKit as _sk
-    from picamera import PiCamera as _pc
-    from picamera.array import PiRGBArray as _pra
-    GPIO, ServoKit, PiCamera, PiRGBArray = _gpio, _sk, _pc, _pra
+    GPIO, ServoKit = _gpio, _sk
 
     if switch_cfg is not None:
         EXIT_SWITCH_PIN = switch_cfg["pin"]
@@ -46,17 +48,8 @@ def init(camera_cfg, switch_cfg=None):
     _pca = ServoKit(channels=16)
     _pca.servo[SERVO_X_CHANNEL].set_pulse_width_range(MIN_IMP[0], MAX_IMP[0])
     _pca.servo[SERVO_Y_CHANNEL].set_pulse_width_range(MIN_IMP[1], MAX_IMP[1])
-
-    res = (camera_cfg["resolution_w"], camera_cfg["resolution_h"])
-    cam = PiCamera()
-    cam.resolution = res
-    cam.framerate = camera_cfg["framerate"]
-    cam.vflip = camera_cfg["vflip"]
-    cam.hflip = camera_cfg["hflip"]
-    raw = PiRGBArray(cam, size=res)
-    time.sleep(2)  # warm-up
-    log.info("Hardware initialized: camera=%s fps=%d", res, camera_cfg["framerate"])
-    return cam, raw
+    log.info("Hardware initialized: servos + relay (pin %d) + switch (pin %d, active_low=%s)",
+             RELAY_PIN, EXIT_SWITCH_PIN, SWITCH_ACTIVE_LOW)
 
 
 def set_servo(channel, angle):
@@ -104,36 +97,10 @@ def cleanup():
             pass
 
 
-def relock_camera_exposure(cam, settle_seconds=3):
-    """Let camera auto-meter briefly, then lock exposure + AWB to current values.
-    Re-callable: flips modes back to auto, settles, then re-locks. Returns dict of locked values."""
-    try:
-        cam.exposure_mode = "auto"
-        cam.awb_mode = "auto"
-        time.sleep(settle_seconds)
-        ss = cam.exposure_speed  # read auto-metered value (us)
-        gains = cam.awb_gains    # (red, blue) Fractions
-        cam.shutter_speed = ss
-        cam.awb_mode = "off"
-        cam.awb_gains = gains
-        cam.exposure_mode = "off"
-        locked = {
-            "shutter_us": ss,
-            "awb_red": float(gains[0]),
-            "awb_blue": float(gains[1]),
-            "iso": cam.iso,
-            "analog_gain": float(cam.analog_gain),
-            "digital_gain": float(cam.digital_gain),
-        }
-        log.info("Camera AE re-locked: %s", locked)
-        return locked
-    except Exception as e:
-        log.warning("AE re-lock failed: %s", e)
-        return None
-
-
 def read_telemetry():
-    """Cheap vcgencmd reads: core temp, arm clock, throttled flags. ~1ms total."""
+    """Cheap vcgencmd reads: core temp, arm clock, throttled flags. ~1ms total.
+    Kept even though the OAK is PoE-powered — still useful for spotting Pi thermal
+    or under-voltage issues on the controller itself."""
     import subprocess
     def _run(args):
         try:

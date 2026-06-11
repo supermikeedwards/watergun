@@ -1,14 +1,25 @@
-# Pi 3 (production) install. Run `pip3 install --user -r requirements.txt`.
+# Pi 3 (controller) install. Run `pip3 install --user -r requirements.txt`.
+#
+# The Pi is now controller-only: servos, solenoid, switch, web UI. All camera +
+# inference work runs on the OAK-D-POE via the depthai library (which talks to the
+# device over the dedicated Ethernet/PoE link — no PiCamera, no on-Pi inference).
+#
+# Pins are deliberate. depthai must match the firmware the .blob was compiled for;
+# pin it and bump intentionally (see models/README.md).
+
+# --- OAK / detection ---
+depthai>=2.24,<3            # talks to the OAK Myriad X; runs YOLOv8n on-device
+blobconverter>=1.4          # only needed to (re)generate the YOLOv8n .blob; harmless on Pi
+
+# --- imaging helpers (Pi side) ---
+# Only used to JPEG-encode the OAK preview frame for the web MJPEG stream and to
+# draw the detection marker on saved images. headless = no GUI deps.
 opencv-python-headless
-picamera
+numpy
+
+# --- controller hardware ---
 RPi.GPIO
 adafruit-circuitpython-servokit
-imutils
+
+# --- web UI ---
 Flask
-numpy
-# TFLite runtime for the bird detector (§10 redesign).
-# tflite-runtime ships armv7l/aarch64 wheels for the Pi. If installation fails
-# (e.g. unsupported Python version), fall back to: pip install tensorflow
-# The detector module auto-falls-back to tensorflow.lite.Interpreter when
-# tflite_runtime isn't importable (used for laptop validation as well).
-tflite-runtime
