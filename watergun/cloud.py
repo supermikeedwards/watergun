@@ -98,7 +98,13 @@ class CloudClient:
             self.enabled = False
             return
 
-        cl = mqtt.Client(client_id=self.thing, clean_session=True)
+        # paho-mqtt 2.x requires an explicit callback API version; 1.x has no such arg.
+        # Pin to VERSION1 so the (client, userdata, flags, rc) callbacks below work on both.
+        try:
+            cl = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1,
+                             client_id=self.thing, clean_session=True)
+        except (AttributeError, TypeError):
+            cl = mqtt.Client(client_id=self.thing, clean_session=True)
         cl.tls_set(ca_certs=self.ca_path, certfile=self.cert_path,
                    keyfile=self.key_path, tls_version=ssl.PROTOCOL_TLSv1_2)
         cl.on_connect = self._on_connect
