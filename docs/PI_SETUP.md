@@ -1,86 +1,105 @@
-# Raspberry Pi deployment
+# Fresh Pi setup — Pigeon Watergun (OAK-D-POE + AWS IoT)
 
-## 1. Static IP (recommended method: router DHCP reservation)
-Easiest: log into your router and assign a reserved IP to the Pi's MAC address. No changes on the Pi needed.
+Bring a **brand-new, blank Raspberry Pi** up to a working watergun that appears on
+**https://birdblast.the-edwards.fr**. This reflects the current architecture (worklog §18):
+the Pi is a thin controller — it drives the servos + solenoid, talks to the **OAK-D-POE**
+for camera/detection, and connects **outbound** to **AWS IoT** (no inbound ports). The
+birdblast web UI is served from AWS, so it works even when the Pi is off.
 
-On the Pi, get the MAC with:
+> The old PiCamera / motion-detection / port-forwarding instructions are gone — superseded
+> by the OAK (§12) and the AWS-offload (§18).
+
+---
+
+## 0. What you need
+- Raspberry Pi (Pi 3 or newer) + **Raspberry Pi OS** (Lite is fine — headless).
+- The **OAK-D-POE** + TP-Link PoE injector (see §12/§17) on a dedicated Ethernet link to the Pi.
+- Servos (PCA9685), solenoid relay (GPIO17), arming switch (GPIO27) wired as before.
+- The **AWS device certs** (produced once on your laptop — see step 3).
+
+## 1. OS + network basics
+1. Flash Raspberry Pi OS, enable SSH, join Wi-Fi (for internet/AWS).
+2. `sudo raspi-config` → set timezone **Europe/Paris**, enable **I2C** (for the PCA9685 servo board).
+3. Confirm NTP: `timedatectl status` → `System clock synchronized: yes`.
+
+## 2. Get the code
 ```bash
-ip link show wlan0 | awk '/ether/ {print $2}'
+git clone https://github.com/supermikeedwards/watergun.git ~/watergun
+cd ~/watergun
 ```
 
-Alternative (on the Pi, classic Raspberry Pi OS using `dhcpcd`):
+## 3. AWS device certificate (once, from your laptop — NOT on the Pi)
+The cert is the Pi's identity for AWS IoT. Mint it on a machine with the `skimr` AWS profile:
 ```bash
-sudo nano /etc/dhcpcd.conf
+cd infra && ./provision-device-cert.sh      # writes certs/ (gitignored)
 ```
-Append:
-```
-interface wlan0
-static ip_address=192.168.1.50/24
-static routers=192.168.1.1
-static domain_name_servers=192.168.1.1 1.1.1.1
-```
-Then `sudo systemctl restart dhcpcd`.
-
-## 2. Pull the code
-First time:
+Then copy the whole `certs/` folder onto the Pi:
 ```bash
-cd ~
-git clone https://github.com/supermikeedwards/watergun.git
-cd watergun
+scp -r certs pi@<pi-ip>:~/watergun/          # from the laptop
 ```
-*(If your Pi login isn't `pi` or you clone elsewhere, update `User=` and `WorkingDirectory=` in `systemd/watergun.service` before step 4.)*
+(The non-secret endpoints/bucket/role are already baked into `config.json`; the certs are
+the only per-device secret.)
 
-Subsequent updates:
+## 4. Run the setup script (on the Pi)
 ```bash
 cd ~/watergun
-git pull
-sudo systemctl restart watergun
+bash scripts/setup_pi.sh
 ```
+It installs apt libs + `pip install -r requirements.txt`, adds the depthai udev rule, checks
+the certs, flips `cloud.enabled=true` (once certs are present), checks the model blob, and
+installs + enables the `watergun` systemd service.
 
-## 3. Install dependencies
+## 5. OAK network link (manual — OS-version specific)
+The OAK is on a dedicated Ethernet/PoE link. Give the Pi a static address on that link so
+`depthai` can reach the OAK at `192.168.10.2` (matches `config.json` → `oak.device_ip`):
+
+- **Bullseye (dhcpcd):** add to `/etc/dhcpcd.conf`:
+  ```
+  interface eth0
+  static ip_address=192.168.10.1/24
+  ```
+- **Bookworm (NetworkManager):**
+  ```bash
+  sudo nmcli con add type ethernet ifname eth0 con-name oak ipv4.method manual ipv4.addresses 192.168.10.1/24
+  ```
+Reboot the link / Pi. The OAK self-assigns on this link; if discovery is flaky, flash a static
+IP onto the OAK (see worklog §17 backlog) or set `oak.device_ip` to what it reports.
+
+## 6. Model blob (OAK detector) — ACTION NEEDED
+`config.json` → `oak.model_blob` points at `models/yolov8n_coco_640x640.blob`, which is **not
+yet in the repo**. Fetch it once (any machine with internet):
 ```bash
-sudo apt update
-sudo apt install -y python3-pip python3-opencv tzdata
-pip3 install -r requirements.txt
+python3 tools/fetch_yolov8n_blob.py
 ```
+> ⚠️ Known issue (2026-07-19): the Luxonis zoo artifact 404s under the old name. Verify the
+> current YOLOv8n entry at https://github.com/luxonis/depthai-model-zoo (or convert an ONNX
+> via `blobconverter.from_onnx`) and update `tools/fetch_yolov8n_blob.py` / `oak.model_blob`.
+> **Without the blob, detection won't run — but the cloud client, web UI, servos, and
+> calibration all still work**, so you can bring the Pi online first and sort the blob after.
 
-## 4. Enable at boot (systemd)
+## 7. Start it
 ```bash
-sudo cp systemd/watergun.service /etc/systemd/system/watergun.service
-sudo systemctl daemon-reload
-sudo systemctl enable watergun
 sudo systemctl start watergun
-```
-
-Check status / logs:
-```bash
-sudo systemctl status watergun
 journalctl -u watergun -f
 ```
+Watch for:
+- `Cloud client starting: endpoint=... thing=watergun-pi` then `Cloud connected + subscribed`.
+- Within ~20s the status pill on **https://birdblast.the-edwards.fr** flips to **Online** and
+  the **Calibrate** tab activates.
+- `OakDetector ready ...` (only if the OAK + blob are present).
 
-## 5. Confirm NTP (time sync)
-Raspberry Pi OS runs `systemd-timesyncd` by default — nothing to install.
-```bash
-timedatectl status        # should show "System clock synchronized: yes" and "NTP service: active"
-sudo timedatectl set-timezone Europe/Paris
-```
+## 8. Verify end-to-end
+- Log in to birdblast → **Status** pill shows **Online**.
+- **Config** tab → change a value → Save → journal shows `Shadow desired.config applied` +
+  `Config reloaded`.
+- **Calibrate** tab → Enter calibration → tap the live view → the gun aims + fires.
+- A detection saves a JPEG that appears in the **Images** tab (served from S3).
 
-## 6. Open the web UI
-On any phone/laptop on the same Wi-Fi: `http://<pi-ip>:8080`
+---
 
-Tabs:
-- **Logs** — live tail, auto-refreshes every 2 s
-- **Control** — Start/Stop button (water only; detection continues). Matches the physical switch.
-- **Config** — edit any value in `config.json`. Save to persist; most values take effect immediately. Camera/hardware/port changes require `sudo systemctl restart watergun`.
-
-## 7. Physical switch
-Wire between GPIO27 and GND (internal pull-up enabled). Press toggles water on/off, exactly like the web UI Stop button.
-
-## 8. Calibrating servos
-The `servo_calibration.txt` file is created on first run with defaults. Edit directly on the Pi if needed — the file format is `KEY=value` per line (e.g. `SERVO_X_CENTER=90.0`).
-
-## 9. Power / energy notes
-- Outside opening hours the process sleeps in 5-minute chunks (configurable). Camera frames aren't captured during sleep.
-- JPEG quality is 80 to keep image writes fast and small (~30–60 KB).
-- Old images are auto-deleted after 15 days (configurable).
-- Running headless (no X / no `cv2.imshow`) saves noticeable CPU on a Pi 3.
+## Fallback / notes
+- **LAN-only mode:** set `cloud.enabled=false` in `config.json` and the old Flask UI still
+  serves on `http://<pi-ip>:8080` (Logs/Control/Config/Calibrate). Useful for on-site debug.
+- **Debugging:** see `docs/PI_DEBUG.md` and `tools/pi_diagnose.sh`.
+- **Cloud contract:** thing `watergun-pi`, classic Device Shadow (`status`/`config`/
+  `telemetry`/`heartbeat`), topics `watergun/{cmd,cmd/resp,stream,viewer}`. Details in worklog §18.
