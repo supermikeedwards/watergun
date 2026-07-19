@@ -4,3 +4,14 @@ logs/
 motion_images/
 servo_calibration.txt
 .venv/
+
+# AWS device certificates + keys (worklog §18) — NEVER commit these
+certs/
+*.pem
+*.private.key
+*.public.key
+
+# Generated SPA runtime config (written by infra/deploy.sh from stack outputs)
+web/config.js
+web/dist/
+node_modules/

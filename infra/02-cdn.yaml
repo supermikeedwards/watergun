@@ -1,0 +1,138 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Birdblast CDN stack (worklog §18): ACM cert (DNS-validated via Route53), CloudFront
+  distribution serving the SPA (default) + detection images (/images/*) from the two
+  private S3 buckets via Origin Access Control, and the Route53 ALIAS record. us-east-1.
+
+  NOTE: no Lambda@Edge JWT gate in v1. The data plane (IoT + S3) is already locked to
+  logged-in users by the Cognito Identity Pool IAM role; the static SPA shell holds no
+  secrets. Edge JWT shell-gating is a documented phase-2 hardening (see infra/README).
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: birdblast
+  DomainName:
+    Type: String
+    Default: birdblast.the-edwards.fr
+  HostedZoneId:
+    Type: String
+    Default: Z03766021DZYFYQGYEP1J
+    Description: Route53 hosted zone for the-edwards.fr (worklog §11).
+  WebBucketName:
+    Type: String
+  ImagesBucketName:
+    Type: String
+
+Resources:
+
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref HostedZoneId
+
+  OAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${ProjectName}-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${ProjectName} birdblast SPA + images"
+        Aliases: [!Ref DomainName]
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          AcmCertificateArn: !Ref Certificate
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        Origins:
+          - Id: web
+            DomainName: !Sub "${WebBucketName}.s3.${AWS::Region}.amazonaws.com"
+            OriginAccessControlId: !Ref OAC
+            S3OriginConfig: {OriginAccessIdentity: ""}
+          - Id: images
+            DomainName: !Sub "${ImagesBucketName}.s3.${AWS::Region}.amazonaws.com"
+            OriginAccessControlId: !Ref OAC
+            S3OriginConfig: {OriginAccessIdentity: ""}
+        DefaultCacheBehavior:
+          TargetOriginId: web
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          # AWS managed "CachingOptimized" policy id.
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        CacheBehaviors:
+          - PathPattern: images/*
+            TargetOriginId: images
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            # AWS managed "CachingDisabled" - detection gallery + live snapshot must be fresh.
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+  # Bucket policies live here (not in core) to avoid a circular dependency:
+  # they reference the distribution ARN.
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucketName
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: cloudfront.amazonaws.com}
+            Action: s3:GetObject
+            Resource: !Sub "arn:aws:s3:::${WebBucketName}/*"
+            Condition:
+              StringEquals:
+                "AWS:SourceArn": !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  ImagesBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ImagesBucketName
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: cloudfront.amazonaws.com}
+            Action: s3:GetObject
+            Resource: !Sub "arn:aws:s3:::${ImagesBucketName}/*"
+            Condition:
+              StringEquals:
+                "AWS:SourceArn": !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt Distribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2   # fixed CloudFront hosted zone id
+
+Outputs:
+  DistributionId:
+    Value: !Ref Distribution
+  DistributionDomain:
+    Value: !GetAtt Distribution.DomainName
+  SiteURL:
+    Value: !Sub "https://${DomainName}"

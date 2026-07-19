@@ -29,8 +29,12 @@ def get():
 
 def validate_against(new_cfg, reference):
     """Reject saves that would corrupt structure. Recursively requires the same dict
-    key sets as `reference`; leaves must be JSON primitives (str/int/float/bool/None).
-    Leaf type changes are allowed (e.g. bird_class_id: null → int)."""
+    key sets as `reference`; leaves must be JSON primitives (str/int/float/bool/None)
+    or lists of primitives (e.g. oak.anchors). Leaf type changes are allowed
+    (e.g. bird_class_id: null → int)."""
+    def _is_primitive(v):
+        return isinstance(v, (str, int, float, bool, type(None)))
+
     def _check(new, ref, path):
         if isinstance(ref, dict):
             if not isinstance(new, dict):
@@ -43,8 +47,14 @@ def validate_against(new_cfg, reference):
                 raise ConfigShapeError(f"{path or '<root>'}: missing key(s) {sorted(missing)}")
             for k in ref:
                 _check(new[k], ref[k], f"{path}.{k}" if path else k)
+        elif isinstance(ref, list):
+            if not isinstance(new, list):
+                raise ConfigShapeError(f"{path}: expected array, got {type(new).__name__}")
+            for i, item in enumerate(new):
+                if not (_is_primitive(item) or isinstance(item, list)):
+                    raise ConfigShapeError(f"{path}[{i}]: array items must be primitives")
         else:
-            if not isinstance(new, (str, int, float, bool, type(None))):
+            if not _is_primitive(new):
                 raise ConfigShapeError(f"{path}: leaf must be string/number/bool/null, got {type(new).__name__}")
     _check(new_cfg, reference, "")
 

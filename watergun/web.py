@@ -4,7 +4,7 @@ import logging
 import time
 from flask import Flask, jsonify, request, Response, abort
 
-from . import config, logging_setup, calibration, hardware
+from . import config, logging_setup, calibration, hardware, calibrate_ops
 from .state import state
 
 log = logging.getLogger(__name__)
@@ -285,6 +285,7 @@ def api_status():
         "switch_enabled": state.switch_enabled,
         "armed": state.armed,
         "mode": state.mode,
+        "kids_mode": state.kids_mode,
         "calibrating": state.calibrating,
         "last_detection": state.last_detection,
         "last_spray": state.last_spray,
@@ -320,32 +321,38 @@ def api_config():
 
 
 # ------------------------- Calibration endpoints -------------------------
+# All delegate to calibrate_ops (shared with the cloud command handler) so the
+# aim formula + safety rules live in exactly one place.
 
-def _require_calibrating():
-    if not state.calibrating:
-        return jsonify({"error": "not in calibration mode"}), 409
-    return None
+def _cal_response(fn):
+    """Run a calibrate_ops call, mapping CalibrationError to 409 (not in cal mode)
+    or 400 (bad params)."""
+    try:
+        return jsonify({"ok": True, **(fn() or {})})
+    except calibrate_ops.CalibrationError as e:
+        code = 409 if "calibration mode" in str(e) else 400
+        return jsonify({"error": str(e)}), code
+    except Exception as e:
+        log.warning("Calibration op failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/toggle_mode", methods=["POST"])
+def api_toggle_mode():
+    with state.lock:
+        state.kids_mode = not state.kids_mode
+    log.info("Web UI mode toggle: kids_mode=%s", state.kids_mode)
+    return jsonify({"kids_mode": state.kids_mode})
 
 
 @app.route("/api/calibrate/enter", methods=["POST"])
 def api_cal_enter():
-    with state.lock:
-        state.calibrating = True
-    log.info("Calibration mode ENTERED via web UI")
-    return jsonify({"calibrating": True})
+    return _cal_response(calibrate_ops.enter)
 
 
 @app.route("/api/calibrate/exit", methods=["POST"])
 def api_cal_exit():
-    with state.lock:
-        state.calibrating = False
-    # Safety: ensure relay is off after leaving calibration, regardless of state.
-    try:
-        hardware.relay_off()
-    except Exception:
-        pass
-    log.info("Calibration mode EXITED via web UI")
-    return jsonify({"calibrating": False})
+    return _cal_response(calibrate_ops.exit_)
 
 
 @app.route("/api/calibration", methods=["GET"])
@@ -355,99 +362,29 @@ def api_cal_values():
 
 @app.route("/api/calibrate/jog", methods=["POST"])
 def api_cal_jog():
-    err = _require_calibrating()
-    if err: return err
     body = request.get_json(force=True, silent=True) or {}
-    x = body.get("x"); y = body.get("y")
-    try:
-        if x is not None:
-            hardware.set_servo(hardware.SERVO_X_CHANNEL, float(x))
-        if y is not None:
-            hardware.set_servo(hardware.SERVO_Y_CHANNEL, float(y))
-    except Exception as e:
-        log.warning("Jog failed: %s", e)
-        return jsonify({"error": str(e)}), 500
-    return jsonify({"ok": True, "x": x, "y": y})
+    return _cal_response(lambda: calibrate_ops.jog(body.get("x"), body.get("y")))
 
 
 @app.route("/api/calibrate/set", methods=["POST"])
 def api_cal_set():
-    err = _require_calibrating()
-    if err: return err
     body = request.get_json(force=True, silent=True) or {}
-    vals = calibration.load()
-    allowed = set(calibration.DEFAULTS.keys())
-    changed = {}
-    for k, v in body.items():
-        if k not in allowed:
-            return jsonify({"error": f"unknown key {k}"}), 400
-        try:
-            vals[k] = float(v)
-            changed[k] = vals[k]
-        except Exception:
-            return jsonify({"error": f"bad value for {k}"}), 400
-    if not changed:
-        return jsonify({"error": "no valid keys"}), 400
-    calibration.save(vals)
-    log.info("Calibration saved from web: %s", changed)
-    return jsonify({"ok": True, "changed": changed})
+    return _cal_response(lambda: calibrate_ops.set_cal(body))
 
 
 @app.route("/api/calibrate/aim", methods=["POST"])
 def api_cal_aim():
-    """Pixel-normalised (nx,ny in [0,1]) -> servo angles using the same inversion the
-    main controller uses. Optionally fires a short burst. Bypasses the armed AND-gate
-    because state.calibrating is required."""
-    err = _require_calibrating()
-    if err: return err
     body = request.get_json(force=True, silent=True) or {}
-    try:
-        nx = float(body.get("nx")); ny = float(body.get("ny"))
-    except Exception:
-        return jsonify({"error": "nx/ny required"}), 400
-    nx = max(0.0, min(1.0, nx)); ny = max(0.0, min(1.0, ny))
-    fire = bool(body.get("fire", False))
-    duration_ms = int(body.get("duration_ms", 300))
-    cal = calibration.load()
-    cfg = config.get()
-    # Same aim formula as controller._aim_and_spray (kept in sync on purpose):
-    # inversion is config-driven (oak/aim mounting orientation), defaults to invert both.
-    aim = cfg.get("aim", {})
-    inv_nx = (1.0 - nx) if aim.get("invert_x", True) else nx
-    inv_ny = (1.0 - ny) if aim.get("invert_y", True) else ny
-    ax = cal["SERVO_X_MIN_ANGLE"] + inv_nx * (cal["SERVO_X_MAX_ANGLE"] - cal["SERVO_X_MIN_ANGLE"])
-    ay = cal["SERVO_Y_MIN_ANGLE"] + inv_ny * (cal["SERVO_Y_MAX_ANGLE"] - cal["SERVO_Y_MIN_ANGLE"])
-    ay += cfg["spray"]["water_jet_angle_offset"]
-    ax = max(0.0, min(180.0, ax)); ay = max(0.0, min(180.0, ay))
-    try:
-        hardware.set_servo(hardware.SERVO_X_CHANNEL, ax)
-        hardware.set_servo(hardware.SERVO_Y_CHANNEL, ay)
-    except Exception as e:
-        return jsonify({"error": f"servo: {e}"}), 500
-    if fire:
-        if not state.calibrating:  # race guard — user could have exited in-between
-            return jsonify({"error": "calibration mode exited before fire"}), 409
-        try:
-            hardware.short_burst(duration_ms / 1000.0)
-        except Exception as e:
-            log.warning("Burst failed: %s", e)
-            return jsonify({"error": f"burst: {e}"}), 500
-    log.info("Calibration aim: nx=%.3f ny=%.3f -> (%.1f,%.1f) fire=%s", nx, ny, ax, ay, fire)
-    return jsonify({"ok": True, "x": ax, "y": ay, "fired": fire})
+    return _cal_response(lambda: calibrate_ops.aim(
+        body.get("nx"), body.get("ny"),
+        fire=bool(body.get("fire", False)),
+        duration_ms=int(body.get("duration_ms", 300))))
 
 
 @app.route("/api/calibrate/fire", methods=["POST"])
 def api_cal_fire():
-    err = _require_calibrating()
-    if err: return err
     body = request.get_json(force=True, silent=True) or {}
-    duration_ms = int(body.get("duration_ms", 300))
-    try:
-        hardware.short_burst(duration_ms / 1000.0)
-    except Exception as e:
-        log.warning("Burst failed: %s", e)
-        return jsonify({"error": str(e)}), 500
-    return jsonify({"ok": True, "duration_ms": duration_ms})
+    return _cal_response(lambda: calibrate_ops.fire(int(body.get("duration_ms", 300))))
 
 
 @app.route("/stream.mjpg")

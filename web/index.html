@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Birdblast</title>
+<style>
+ :root{
+   --bg:#f5f5f7; --card:#ffffff; --ink:#1d1d1f; --muted:#6e6e73;
+   --line:#e5e5ea; --accent:#0071e3; --green:#34c759; --red:#ff3b30; --amber:#ff9f0a;
+   --radius:18px; --shadow:0 4px 24px rgba(0,0,0,.06); --shadow-sm:0 1px 3px rgba(0,0,0,.08);
+ }
+ @media (prefers-color-scheme: dark){
+   :root{--bg:#000;--card:#1c1c1e;--ink:#f5f5f7;--muted:#8e8e93;--line:#2c2c2e;}
+ }
+ *{box-sizing:border-box}
+ html,body{margin:0}
+ body{
+   font-family:-apple-system,"SF Pro Text","SF Pro Display",Inter,system-ui,sans-serif;
+   background:var(--bg);color:var(--ink);
+   -webkit-font-smoothing:antialiased;line-height:1.47;
+ }
+ h1,h2,h3{font-weight:600;letter-spacing:-.02em;margin:0}
+ .muted{color:var(--muted);font-size:13px}
+
+ /* Frosted sticky header */
+ header{
+   position:sticky;top:0;z-index:10;
+   display:flex;align-items:center;justify-content:space-between;
+   padding:14px 20px;
+   background:color-mix(in srgb,var(--bg) 72%,transparent);
+   backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);
+   border-bottom:1px solid var(--line);
+ }
+ header .brand{font-size:19px;font-weight:600;letter-spacing:-.02em}
+ .statusrow{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+ .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}
+ .dot.online{background:var(--green);box-shadow:0 0 0 4px color-mix(in srgb,var(--green) 22%,transparent)}
+ .dot.offline{background:var(--red);box-shadow:0 0 0 4px color-mix(in srgb,var(--red) 20%,transparent)}
+
+ /* Segmented tab bar */
+ nav{display:flex;gap:4px;padding:8px 12px;max-width:900px;margin:0 auto;overflow-x:auto}
+ nav button{
+   flex:1;min-width:84px;border:none;background:transparent;color:var(--muted);
+   padding:9px 10px;font-size:14px;font-weight:500;border-radius:10px;cursor:pointer;
+   transition:background .15s,color .15s;
+ }
+ nav button.active{background:var(--card);color:var(--ink);box-shadow:var(--shadow-sm)}
+ nav button:disabled{opacity:.35;cursor:not-allowed}
+
+ main{max-width:900px;margin:0 auto;padding:16px 20px 60px}
+ .card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px;margin-bottom:16px}
+ .card h3{font-size:17px;margin-bottom:4px}
+ .card .sub{margin-bottom:14px}
+
+ /* Buttons */
+ .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;
+   border:none;border-radius:12px;padding:13px 18px;font-size:16px;font-weight:500;
+   cursor:pointer;width:100%;margin-top:10px;transition:transform .06s,filter .15s}
+ .btn:active{transform:scale(.985)}
+ .btn.primary{background:var(--accent);color:#fff}
+ .btn.green{background:var(--green);color:#fff}
+ .btn.red{background:var(--red);color:#fff}
+ .btn.amber{background:var(--amber);color:#fff}
+ .btn.ghost{background:color-mix(in srgb,var(--muted) 14%,transparent);color:var(--ink)}
+
+ /* Status pills */
+ .pill{display:inline-flex;align-items:center;gap:5px;padding:4px 11px;border-radius:100px;
+   font-size:12px;font-weight:600;margin:3px 3px 3px 0;background:color-mix(in srgb,var(--muted) 14%,transparent);color:var(--muted)}
+ .pill.on{background:color-mix(in srgb,var(--green) 18%,transparent);color:var(--green)}
+ .pill.off{background:color-mix(in srgb,var(--red) 16%,transparent);color:var(--red)}
+ .pill.info{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent)}
+
+ /* iOS toggle (lesson from Skimr: inline-flex + flex:none so width/height apply) */
+ .toggle-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
+ .toggle-row:first-child{border-top:none}
+ .toggle-row .label{font-size:15px}
+ .toggle{position:relative;display:inline-flex;flex:none;width:52px;height:32px;cursor:pointer}
+ .toggle input{opacity:0;width:0;height:0}
+ .toggle .track{position:absolute;inset:0;background:color-mix(in srgb,var(--muted) 32%,transparent);
+   border-radius:100px;transition:background .2s}
+ .toggle .knob{position:absolute;top:2px;left:2px;width:28px;height:28px;background:#fff;border-radius:50%;
+   box-shadow:0 1px 3px rgba(0,0,0,.3);transition:transform .2s}
+ .toggle input:checked + .track{background:var(--green)}
+ .toggle input:checked + .track + .knob{transform:translateX(20px)}
+
+ /* Forms */
+ .field{padding:12px 0;border-top:1px solid var(--line)}
+ .field:first-child{border-top:none}
+ .field label{display:block;font-size:14px;font-weight:500;margin-bottom:4px}
+ .field .help{font-size:12px;color:var(--muted);margin-bottom:8px}
+ .field input{width:100%;padding:11px 13px;font-size:16px;border:1px solid var(--line);
+   border-radius:11px;background:var(--bg);color:var(--ink)}
+ .field input:focus{outline:none;border-color:var(--accent)}
+
+ /* Gallery */
+ .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
+ .gallery figure{margin:0;background:var(--bg);border-radius:14px;overflow:hidden;box-shadow:var(--shadow-sm)}
+ .gallery img{width:100%;display:block;aspect-ratio:4/3;object-fit:cover;background:#000}
+ .gallery figcaption{padding:8px 10px;font-size:12px;color:var(--muted)}
+
+ /* Live view */
+ .stream-wrap{position:relative;width:100%;background:#000;border-radius:14px;overflow:hidden;min-height:180px;display:flex;align-items:center;justify-content:center}
+ .stream-wrap img{display:block;width:100%}
+ .stream-wrap .ph{color:#666;font-size:13px}
+ .crosshair{position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;border:2px solid var(--accent);border-radius:50%;opacity:0;transition:opacity .1s;pointer-events:none}
+ .jog{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+ .jog button{padding:12px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:11px;font-size:15px;cursor:pointer}
+ .banner{background:color-mix(in srgb,var(--amber) 15%,transparent);color:var(--amber);
+   padding:10px 14px;border-radius:12px;font-size:13px;font-weight:500;margin-bottom:12px}
+
+ /* Login */
+ #login{max-width:340px;margin:14vh auto;padding:0 24px;text-align:center}
+ #login h1{font-size:30px;margin-bottom:6px}
+ #login input{width:100%;padding:13px;font-size:16px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink);margin-top:10px}
+ #login input:focus{outline:none;border-color:var(--accent)}
+ .err{color:var(--red);font-size:13px;min-height:18px;margin-top:8px}
+ pre{white-space:pre-wrap;word-break:break-word;font-size:12px;color:var(--muted);margin:0}
+</style>
+</head>
+<body>
+
+<div id="login" style="display:none">
+  <h1>💦 Birdblast</h1>
+  <p class="muted">Sign in to view the watergun.</p>
+  <input id="email" type="email" placeholder="Email" autocomplete="username">
+  <input id="password" type="password" placeholder="Password" autocomplete="current-password"
+         onkeydown="if(event.key==='Enter')BB.login()">
+  <button class="btn primary" onclick="BB.login()">Sign In</button>
+  <p id="loginErr" class="err"></p>
+</div>
+
+<div id="app" style="display:none">
+  <header>
+    <span class="brand">💦 Birdblast</span>
+    <span class="statusrow"><span id="dot" class="dot"></span><span id="statusText">connecting…</span></span>
+  </header>
+  <nav>
+    <button id="tImages" class="active" onclick="BB.show('images')">Images</button>
+    <button id="tConfig" onclick="BB.show('config')">Config</button>
+    <button id="tStatus" onclick="BB.show('status')">Status</button>
+    <button id="tCal" onclick="BB.show('cal')">Calibrate</button>
+  </nav>
+  <main>
+    <section id="images">
+      <div class="card">
+        <h3>Detection images</h3>
+        <p class="sub muted">Every bird the gun has spotted. Available even when the watergun is offline.</p>
+        <div class="gallery" id="gallery"><span class="muted">loading…</span></div>
+      </div>
+    </section>
+
+    <section id="config" style="display:none">
+      <div class="card">
+        <h3>Configuration</h3>
+        <p class="sub muted">Last values reported by the watergun. Changes are saved to the cloud and applied the moment it's online.</p>
+        <div id="cfgForm"><span class="muted">loading…</span></div>
+        <button class="btn primary" onclick="BB.saveConfig()">Save changes</button>
+      </div>
+    </section>
+
+    <section id="status" style="display:none">
+      <div class="card">
+        <h3>Status</h3>
+        <p class="sub muted">Live state of the watergun.</p>
+        <div id="statusPills" style="margin-bottom:8px"></div>
+        <div id="offlineBanner" class="banner" style="display:none"></div>
+        <div class="toggle-row">
+          <span class="label">Water enabled</span>
+          <label class="toggle"><input type="checkbox" id="tgWater" onchange="BB.toggleWater()"><span class="track"></span><span class="knob"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span class="label">Kids mode <span class="muted">(spray people, not birds)</span></span>
+          <label class="toggle"><input type="checkbox" id="tgKids" onchange="BB.toggleKids()"><span class="track"></span><span class="knob"></span></label>
+        </div>
+        <pre id="telemetry" style="margin-top:14px"></pre>
+      </div>
+    </section>
+
+    <section id="cal" style="display:none">
+      <div class="card">
+        <h3>Calibrate</h3>
+        <p class="sub muted">Aim the gun and fire test bursts. Only available while the watergun is online.</p>
+        <div id="calOffline" class="banner" style="display:none">The watergun is offline — calibration is unavailable.</div>
+        <div id="calControls" style="display:none">
+          <button id="calToggle" class="btn amber" onclick="BB.toggleCal()">Enter calibration mode</button>
+          <div id="calLive" style="display:none">
+            <div class="stream-wrap" style="margin-top:12px">
+              <img id="stream" alt="live view"><span id="streamPh" class="ph">waiting for video…</span>
+              <span class="crosshair" id="crosshair"></span>
+            </div>
+            <p class="muted" style="margin-top:8px">Tap the image to aim there and fire a short burst.</p>
+            <div class="jog">
+              <button onclick="BB.step('x',-5)">◀ X −5°</button><button onclick="BB.step('x',5)">X +5° ▶</button>
+              <button onclick="BB.step('y',-5)">▼ Y −5°</button><button onclick="BB.step('y',5)">Y +5° ▲</button>
+            </div>
+            <button class="btn red" onclick="BB.fire()">Fire test burst</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script src="https://sdk.amazonaws.com/js/aws-sdk-2.1691.0.min.js"></script>
+<script src="https://unpkg.com/amazon-cognito-identity-js@6.3.12/dist/amazon-cognito-identity.min.js"></script>
+<script src="https://unpkg.com/crypto-js@4.2.0/crypto-js.js"></script>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

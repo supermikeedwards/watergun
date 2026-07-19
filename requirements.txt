@@ -21,5 +21,13 @@ numpy
 RPi.GPIO
 adafruit-circuitpython-servokit
 
-# --- web UI ---
+# --- web UI (LAN fallback; primary UI is the AWS birdblast SPA) ---
 Flask
+
+# --- AWS IoT cloud client (worklog §18) ---
+# Deliberately pure-Python / ARM-safe: avoids the awscrt native-wheel pain that hit
+# tflite/cv2 on the Pi 3. paho speaks plain MQTT (the Device Shadow is just MQTT
+# topics); boto3+requests handle S3 upload via the IoT credentials provider.
+paho-mqtt>=1.6,<3
+boto3>=1.26
+requests>=2.28

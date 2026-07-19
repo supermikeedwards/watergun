@@ -1,0 +1,246 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Birdblast / Pigeon Watergun - core stack (worklog §18): AWS IoT Thing + policies,
+  Cognito User Pool + Identity Pool, S3 buckets (SPA + detection images), and the
+  IAM roles that let the browser talk directly to IoT + S3 and let the Pi upload
+  images via the IoT credentials provider. Deploy in us-east-1.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: birdblast
+  ThingName:
+    Type: String
+    Default: watergun-pi
+  DomainName:
+    Type: String
+    Default: birdblast.the-edwards.fr
+    Description: Used for S3 CORS + Cognito callback URLs.
+  ImageRetentionDays:
+    Type: Number
+    Default: 30
+
+Resources:
+
+  # ----------------------------------------------------------------- S3 buckets
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-web-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+
+  ImagesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-images-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-detections
+            Status: Enabled
+            ExpirationInDays: !Ref ImageRetentionDays
+      # SPA lists/reads images directly from the bucket via Identity Pool creds.
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [GET, HEAD]
+            AllowedOrigins:
+              - !Sub "https://${DomainName}"
+              - "http://localhost:*"
+            AllowedHeaders: ["*"]
+            MaxAge: 3000
+
+  # ----------------------------------------------------------------- IoT (device)
+  Thing:
+    Type: AWS::IoT::Thing
+    Properties:
+      ThingName: !Ref ThingName
+
+  # Policy attached to the Pi's device certificate.
+  DevicePolicy:
+    Type: AWS::IoT::Policy
+    Properties:
+      PolicyName: !Sub "${ProjectName}-device"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: iot:Connect
+            Resource: !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:client/${ThingName}"
+          - Effect: Allow
+            Action: [iot:Publish, iot:Receive]
+            Resource:
+              - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/$aws/things/${ThingName}/shadow/*"
+              - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/watergun/*"
+          - Effect: Allow
+            Action: iot:Subscribe
+            Resource:
+              - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/$aws/things/${ThingName}/shadow/*"
+              - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/watergun/*"
+          - Effect: Allow
+            Action: [iot:GetThingShadow, iot:UpdateThingShadow]
+            Resource: !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:thing/${ThingName}"
+          - Effect: Allow
+            Action: iot:AssumeRoleWithCertificate
+            Resource: !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:rolealias/${ProjectName}-device-s3"
+
+  # Role the Pi assumes (via its cert) through the IoT credentials provider to
+  # upload detection images to S3 - no static IAM keys on the Pi.
+  DeviceS3Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-device-s3"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: credentials.iot.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: put-images
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "arn:aws:s3:::${ProjectName}-images-${AWS::AccountId}/images/*"
+
+  DeviceRoleAlias:
+    Type: AWS::IoT::RoleAlias
+    Properties:
+      RoleAlias: !Sub "${ProjectName}-device-s3"
+      RoleArn: !GetAtt DeviceS3Role.Arn
+      CredentialDurationSeconds: 3600
+
+  # ----------------------------------------------------------------- Cognito
+  # Shared with Skimr per worklog §16 - single pool, per-app clients.
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${ProjectName}-users"
+      AdminCreateUserConfig: {AllowAdminCreateUserOnly: true}   # no self-signup
+      AutoVerifiedAttributes: [email]
+      UsernameAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      Domain: !Sub "${ProjectName}-${AWS::AccountId}"
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub "${ProjectName}-spa"
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      SupportedIdentityProviders: [COGNITO]
+      AllowedOAuthFlows: [code]
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes: [openid, email, profile]
+      CallbackURLs:
+        - !Sub "https://${DomainName}"
+        - !Sub "https://${DomainName}/"
+        - "http://localhost:5173"
+      LogoutURLs:
+        - !Sub "https://${DomainName}"
+        - "http://localhost:5173"
+      ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+
+  IdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      IdentityPoolName: !Sub "${ProjectName}_identity"
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref UserPoolClient
+          ProviderName: !GetAtt UserPool.ProviderName
+
+  # Role assumed by a logged-in browser: talk to THIS thing's shadow/topics + read images.
+  AuthRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-auth"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Federated: cognito-identity.amazonaws.com}
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals: {"cognito-identity.amazonaws.com:aud": !Ref IdentityPool}
+              "ForAnyValue:StringLike": {"cognito-identity.amazonaws.com:amr": authenticated}
+      Policies:
+        - PolicyName: iot-and-images
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: iot:Connect
+                Resource: !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:client/*"
+              - Effect: Allow
+                Action: [iot:Publish, iot:Receive]
+                Resource:
+                  - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/$aws/things/${ThingName}/shadow/*"
+                  - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/watergun/*"
+              - Effect: Allow
+                Action: iot:Subscribe
+                Resource:
+                  - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/$aws/things/${ThingName}/shadow/*"
+                  - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/watergun/*"
+              - Effect: Allow
+                Action: [iot:GetThingShadow, iot:UpdateThingShadow]
+                Resource: !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:thing/${ThingName}"
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${ProjectName}-images-${AWS::AccountId}/*"
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:aws:s3:::${ProjectName}-images-${AWS::AccountId}"
+                Condition:
+                  StringLike: {"s3:prefix": ["images/*"]}
+
+  IdentityPoolRoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref IdentityPool
+      Roles:
+        authenticated: !GetAtt AuthRole.Arn
+
+Outputs:
+  WebBucketName:
+    Value: !Ref WebBucket
+  ImagesBucketName:
+    Value: !Ref ImagesBucket
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  IdentityPoolId:
+    Value: !Ref IdentityPool
+  HostedUIDomain:
+    Value: !Sub "https://${ProjectName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com"
+  RoleAliasName:
+    Value: !Ref DeviceRoleAlias
+  ThingName:
+    Value: !Ref ThingName

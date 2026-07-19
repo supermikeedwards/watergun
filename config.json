@@ -69,5 +69,25 @@
     "spray_duration": 1.0,
     "post_cycle_wait_seconds": 0.5,
     "sweep_enabled": false
+  },
+  "cloud": {
+    "enabled": false,
+    "endpoint": "",
+    "region": "us-east-1",
+    "thing_name": "watergun-pi",
+    "port": 8883,
+    "ca_path": "certs/AmazonRootCA1.pem",
+    "cert_path": "certs/watergun-pi.cert.pem",
+    "key_path": "certs/watergun-pi.private.key",
+    "images_bucket": "",
+    "role_alias": "",
+    "credentials_endpoint": "",
+    "heartbeat_seconds": 15,
+    "cmd_topic": "watergun/cmd",
+    "stream_topic": "watergun/stream",
+    "viewer_topic": "watergun/viewer",
+    "viewer_timeout_seconds": 10,
+    "stream_fps": 5,
+    "stream_jpeg_quality": 50
   }
 }

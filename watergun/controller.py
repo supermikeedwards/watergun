@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 from . import config, hardware, calibration
 from .detector import OakDetector
+from .cloud import CloudClient
 from .state import state
 
 log = logging.getLogger(__name__)
@@ -160,6 +161,9 @@ def run():
     det = OakDetector(cfg)
     det.start()
 
+    cloud = CloudClient(cfg)
+    cloud.start()
+
     last_detection = 0
     last_image_cleanup = 0
     last_telemetry = 0
@@ -177,6 +181,7 @@ def run():
             if config.consume_dirty():
                 cfg = config.load()
                 det.cfg = cfg
+                cloud.report_config(cfg)
                 log.info("Config reloaded")
 
             # Opening-hours state machine.
@@ -185,6 +190,7 @@ def run():
             if new_mode != state.mode:
                 state.mode = new_mode
                 log.info("Mode -> %s", new_mode)
+                cloud.report_status()
             if not active:
                 log.info("Off-hours: sleeping %ds", cfg["opening_hours"]["off_hours_cycle_seconds"])
                 _sleep_interruptible(cfg["opening_hours"]["off_hours_cycle_seconds"])
@@ -197,7 +203,9 @@ def run():
 
             # Periodic telemetry log (Pi-side health: temp / clock / throttled).
             if (time.time() - last_telemetry) > cfg["telemetry"]["log_interval_seconds"]:
-                log.info("Telemetry: %s", hardware.read_telemetry())
+                telemetry = hardware.read_telemetry()
+                log.info("Telemetry: %s", telemetry)
+                cloud.report_telemetry(telemetry)
                 last_telemetry = time.time()
 
             # Pull the latest detections + frame from the OAK.
@@ -211,6 +219,9 @@ def run():
                     with state.lock:
                         state.latest_jpeg = jpeg
                         state.latest_jpeg_ts = now
+                    # Push to the SPA over IoT only while someone is watching.
+                    if cloud.viewer_active():
+                        cloud.publish_stream_frame(jpeg)
                 last_stream_publish = now
 
             # Calibration mode: pause detection/spray, keep stream alive.
@@ -261,10 +272,16 @@ def run():
                 log.info("%s target id=%d stable at (%.3f,%.3f) score=%.2f — firing",
                          target_label, target["id"], target["cx"], target["cy"], target["score"])
                 state.last_detection = datetime.now().isoformat(timespec="seconds")
+                saved_path = None
                 if cfg["images"]["save_detections"] and frame is not None:
-                    _save_image(frame, target["cx"], target["cy"], cfg["images"]["jpeg_quality"])
+                    saved_path = _save_image(frame, target["cx"], target["cy"], cfg["images"]["jpeg_quality"])
+                if saved_path:
+                    cloud.upload_image(saved_path,
+                                       {"label": target_label, "score": round(target["score"], 3),
+                                        "cx": round(target["cx"], 3), "cy": round(target["cy"], 3)})
                 _aim_and_spray(target["cx"], target["cy"], cal, cfg, spray_duration, sweep_enabled)
                 last_detection = time.time()
+                cloud.report_status()
                 log.info("Post-cycle wait: %ss", post_cycle)
                 _sleep_interruptible(post_cycle)
                 det.reset()
@@ -282,6 +299,10 @@ def run():
             pass
         det.close()
         hardware.cleanup()
+        try:
+            cloud.close()
+        except Exception:
+            pass
         log.info("Controller stopped")
 
 
@@ -292,7 +313,8 @@ def _sleep_interruptible(seconds):
 
 
 def _save_image(frame, nx, ny, quality):
-    """Save a detection frame with a marker at the normalized target point."""
+    """Save a detection frame with a marker at the normalized target point.
+    Returns the file path on success, else None."""
     try:
         import cv2
         h, w = frame.shape[:2]
@@ -301,5 +323,7 @@ def _save_image(frame, nx, ny, quality):
         img = frame.copy()
         cv2.drawMarker(img, (cx, cy), (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
         cv2.imwrite(p, img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        return p
     except Exception as e:
         log.warning("Failed to save image: %s", e)
+        return None
