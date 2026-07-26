@@ -150,19 +150,36 @@ def _aim_and_spray(nx, ny, cal, cfg, spray_duration, sweep_enabled):
 def run():
     cfg = config.load()
     cal = calibration.load()
-    hardware.init(cfg.get("switch"))
-    hardware.set_servo(hardware.SERVO_X_CHANNEL, cal["SERVO_X_CENTER"])
-    hardware.set_servo(hardware.SERVO_Y_CHANNEL, cal["SERVO_Y_CENTER"])
 
-    threading.Thread(target=_switch_watcher,
-                     args=(cfg["switch"]["debounce_ms"],),
-                     daemon=True).start()
+    # Hardware (servos/relay/switch) and the OAK detector are each OPTIONAL at
+    # startup. A Pi with no servo board, or no camera connected, must still come
+    # ONLINE in AWS IoT and serve the UI/telemetry — so we degrade gracefully
+    # instead of crash-looping. The cloud client always starts.
+    hardware_ok = False
+    try:
+        hardware.init(cfg.get("switch"))
+        hardware.set_servo(hardware.SERVO_X_CHANNEL, cal["SERVO_X_CENTER"])
+        hardware.set_servo(hardware.SERVO_Y_CHANNEL, cal["SERVO_Y_CENTER"])
+        threading.Thread(target=_switch_watcher,
+                         args=(cfg["switch"]["debounce_ms"],),
+                         daemon=True).start()
+        hardware_ok = True
+    except Exception as e:
+        log.error("Hardware init failed (%s) — running WITHOUT servos/relay; "
+                  "no aiming or spraying until fixed.", e)
 
     det = OakDetector(cfg)
-    det.start()
+    detector_ok = False
+    try:
+        det.start()
+        detector_ok = True
+    except Exception as e:
+        log.error("OAK detector start failed (%s) — running WITHOUT detection; "
+                  "cloud/UI/telemetry still available.", e)
 
     cloud = CloudClient(cfg)
     cloud.start()
+    log.info("Startup complete: hardware_ok=%s detector_ok=%s", hardware_ok, detector_ok)
 
     last_detection = 0
     last_image_cleanup = 0
@@ -207,6 +224,13 @@ def run():
                 log.info("Telemetry: %s", telemetry)
                 cloud.report_telemetry(telemetry)
                 last_telemetry = time.time()
+
+            # Without a detector we are "online but idle": keep reporting
+            # telemetry + serving the cloud/UI, but there is nothing to detect,
+            # stream, or spray. Loop slowly so the process stays responsive.
+            if not detector_ok:
+                _sleep_interruptible(1.0)
+                continue
 
             # Pull the latest detections + frame from the OAK.
             tracklets, frame = det.poll()
@@ -279,7 +303,10 @@ def run():
                     cloud.upload_image(saved_path,
                                        {"label": target_label, "score": round(target["score"], 3),
                                         "cx": round(target["cx"], 3), "cy": round(target["cy"], 3)})
-                _aim_and_spray(target["cx"], target["cy"], cal, cfg, spray_duration, sweep_enabled)
+                if hardware_ok:
+                    _aim_and_spray(target["cx"], target["cy"], cal, cfg, spray_duration, sweep_enabled)
+                else:
+                    log.info("Target stable but hardware unavailable — logged/uploaded, no aim/spray")
                 last_detection = time.time()
                 cloud.report_status()
                 log.info("Post-cycle wait: %ss", post_cycle)
@@ -293,12 +320,20 @@ def run():
         log.info("Cleaning up")
         state.exit_flag = True
         try:
-            hardware.set_servo(hardware.SERVO_X_CHANNEL, cal["SERVO_X_CENTER"])
-            hardware.set_servo(hardware.SERVO_Y_CHANNEL, cal["SERVO_Y_CENTER"])
+            if hardware_ok:
+                hardware.set_servo(hardware.SERVO_X_CHANNEL, cal["SERVO_X_CENTER"])
+                hardware.set_servo(hardware.SERVO_Y_CHANNEL, cal["SERVO_Y_CENTER"])
         except Exception:
             pass
-        det.close()
-        hardware.cleanup()
+        try:
+            if detector_ok:
+                det.close()
+        except Exception:
+            pass
+        try:
+            hardware.cleanup()
+        except Exception:
+            pass
         try:
             cloud.close()
         except Exception:
