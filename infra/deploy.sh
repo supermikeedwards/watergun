@@ -28,8 +28,15 @@ deploy_core() {
     --parameter-overrides ProjectName=$PROJECT ThingName=watergun-pi DomainName=$DOMAIN
 }
 
-deploy_cdn() {
-  local web images
+attach_web_policy() {
+  # AWS IoT requires an IoT policy attached to each authenticated Cognito
+  # IDENTITY for MQTT auth (the IAM role alone is not enough). Browser CORS
+  # blocks client-side AttachPolicy, so we do it here with admin creds.
+  echo "==> Attaching web IoT policy to existing Cognito identities..."
+  "$HERE/attach-web-policy.sh" || echo "  (no identities yet or attach failed; run attach-web-policy.sh after first login)"
+}
+
+deploy_cdn() {  local web images
   web=$(out "$CORE_STACK" WebBucketName)
   images=$(out "$CORE_STACK" ImagesBucketName)
   echo "==> Deploying CDN stack ($CDN_STACK) [ACM validation can take a few min]..."
@@ -89,7 +96,11 @@ summary() {
 if [ "${1:-}" = "--spa-only" ]; then
   upload_spa; summary; exit 0
 fi
+if [ "${1:-}" = "--attach-only" ]; then
+  attach_web_policy; exit 0
+fi
 deploy_core
+attach_web_policy
 deploy_cdn
 upload_spa
 summary

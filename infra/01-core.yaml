@@ -125,6 +125,35 @@ Resources:
       RoleArn: !GetAtt DeviceS3Role.Arn
       CredentialDurationSeconds: 3600
 
+  # ----------------------------------------------------------------- IoT (browser)
+  # AWS IoT policy attached to each authenticated Cognito IDENTITY (not the IAM
+  # role). For MQTT-over-WSS, AWS IoT authorizes a Cognito identity via an IoT
+  # policy attached to the identity itself -- the IAM role's iot:* permissions are
+  # NOT sufficient (an authenticated user otherwise fails Connect with
+  # AUTHORIZATION_FAILURE). See AWS docs "Amazon Cognito identities" + worklog §18.
+  # The attachment (per-identity) is done by deploy.sh / attach-web-policy.sh,
+  # because browser-side AttachPolicy is blocked by CORS (aws/aws-sdk-js#3593).
+  WebPolicy:
+    Type: AWS::IoT::Policy
+    Properties:
+      PolicyName: !Sub "${ProjectName}-web"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: iot:Connect
+            Resource: !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:client/*"
+          - Effect: Allow
+            Action: iot:Subscribe
+            Resource:
+              - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/$aws/things/${ThingName}/shadow/*"
+              - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/watergun/*"
+          - Effect: Allow
+            Action: [iot:Receive, iot:Publish]
+            Resource:
+              - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/$aws/things/${ThingName}/shadow/*"
+              - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/watergun/*"
+
   # ----------------------------------------------------------------- Cognito
   # Shared with Skimr per worklog §16 - single pool, per-app clients.
   UserPool:
@@ -244,3 +273,5 @@ Outputs:
     Value: !Ref DeviceRoleAlias
   ThingName:
     Value: !Ref ThingName
+  WebPolicyName:
+    Value: !Ref WebPolicy
