@@ -1,13 +1,20 @@
 """Main controller: orchestrates Pi hardware + OAK detector + state machine.
 
-The Pi 3 is controller-only. The OAK-D-POE does camera + YOLOv8n inference +
-object tracking on its Myriad X VPU and streams results here over the dedicated
-Ethernet/PoE link. This loop consumes tracklets, decides when to fire, and drives
+The Pi 3 is controller-only. The OAK-D-POE does camera + stereo depth + spatial
+YOLO inference + object tracking on its Myriad X VPU and streams spatial tracklets
+here over the dedicated Ethernet/PoE link. Each track carries a 3D position (XYZ,
+mm). This loop gates targets by a distance band, decides when to fire, and drives
 the servos + solenoid.
 
 Operating modes (mutually exclusive, toggled from the web UI via state.kids_mode):
   - bird mode (default): target COCO class "bird", 2 s stationary dwell.
   - kids mode          : target COCO class "person", 0.5 s dwell, more generous spray.
+
+Depth gating (worklog §20): detections outside [detection.min_distance_mm,
+detection.max_distance_mm] are rejected (the fence/cat behind the tree, grass in
+front). Unknown-depth tracks (stereo dropout) still pass. Distance is logged and
+attached to uploaded images; full 3D ballistic aim is deferred to on-hardware
+calibration — v1 aims with the existing 2D calibrated mapping.
 
 State machine (opening hours):
   - "active"    : within opening hours -> detect + spray.
@@ -283,7 +290,9 @@ def run():
                 sweep_enabled = True
                 post_cycle = cfg["spray"]["post_cycle_wait_seconds"]
 
-            target = det.select_target(tracklets, target_label, conf)
+            target = det.select_target(tracklets, target_label, conf,
+                                       det_cfg.get("min_distance_mm"),
+                                       det_cfg.get("max_distance_mm"))
             if not target:
                 time.sleep(0.01)
                 continue
@@ -293,8 +302,14 @@ def run():
                                  det_cfg["stationary_threshold_norm"],
                                  dwell,
                                  det_cfg["min_positions_for_stationary"]):
-                log.info("%s target id=%d stable at (%.3f,%.3f) score=%.2f — firing",
-                         target_label, target["id"], target["cx"], target["cy"], target["score"])
+                z = target.get("z_mm", 0.0)
+                dist = target.get("dist_mm", 0.0)
+                depth_str = ("unknown" if z <= 0
+                             else "z=%dmm dist=%dmm (x=%d y=%d)"
+                             % (z, dist, target.get("x_mm", 0), target.get("y_mm", 0)))
+                log.info("%s target id=%d stable at (%.3f,%.3f) score=%.2f depth=%s — firing",
+                         target_label, target["id"], target["cx"], target["cy"],
+                         target["score"], depth_str)
                 state.last_detection = datetime.now().isoformat(timespec="seconds")
                 saved_path = None
                 if cfg["images"]["save_detections"] and frame is not None:
@@ -302,7 +317,10 @@ def run():
                 if saved_path:
                     cloud.upload_image(saved_path,
                                        {"label": target_label, "score": round(target["score"], 3),
-                                        "cx": round(target["cx"], 3), "cy": round(target["cy"], 3)})
+                                        "cx": round(target["cx"], 3), "cy": round(target["cy"], 3),
+                                        "z_mm": int(z), "dist_mm": int(dist),
+                                        "x_mm": int(target.get("x_mm", 0)),
+                                        "y_mm": int(target.get("y_mm", 0))})
                 if hardware_ok:
                     _aim_and_spray(target["cx"], target["cy"], cal, cfg, spray_duration, sweep_enabled)
                 else:

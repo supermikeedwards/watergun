@@ -17,13 +17,21 @@
     "anchor_masks": {},
     "iou_threshold": 0.5,
     "confidence_threshold": 0.4,
-    "tracker_labels": ["bird", "person"]
+    "tracker_labels": ["bird", "person"],
+    "mono_resolution": "400",
+    "bounding_box_scale_factor": 0.5,
+    "depth_lower_threshold_mm": 300,
+    "depth_upper_threshold_mm": 20000,
+    "stereo_lr_check": true,
+    "stereo_subpixel": false
   },
   "detection": {
     "min_acquire_time": 2.0,
     "min_positions_for_stationary": 5,
     "stationary_threshold_norm": 0.05,
-    "min_detection_interval": 3
+    "min_detection_interval": 3,
+    "min_distance_mm": 500,
+    "max_distance_mm": 15000
   },
   "aim": {
     "invert_x": true,
