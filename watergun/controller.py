@@ -40,6 +40,12 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IMAGE_DIR = os.path.join(BASE_DIR, "motion_images")
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
+# How often to re-attempt OAK detector startup when it isn't running. The OAK is
+# a PoE device that reboots when a depthai session closes and ships with a flaky
+# 0.0.16 bootloader, so it can be briefly absent at startup or drop its link. We
+# retry so a flaky boot self-heals WITHOUT a manual service restart (worklog §20).
+DETECTOR_RETRY_SECONDS = 30
+
 
 def _in_opening_hours(cfg):
     oh = cfg["opening_hours"]
@@ -192,6 +198,7 @@ def run():
     last_image_cleanup = 0
     last_telemetry = 0
     last_stream_publish = 0.0
+    last_detector_retry = time.time()
     was_calibrating = False
 
     stream_fps = cfg.get("calibration", {}).get("stream_fps", 5)
@@ -234,10 +241,22 @@ def run():
 
             # Without a detector we are "online but idle": keep reporting
             # telemetry + serving the cloud/UI, but there is nothing to detect,
-            # stream, or spray. Loop slowly so the process stays responsive.
+            # stream, or spray. Periodically retry the OAK so a flaky boot or a
+            # dropped link self-heals without a manual service restart.
             if not detector_ok:
-                _sleep_interruptible(1.0)
-                continue
+                if (time.time() - last_detector_retry) > DETECTOR_RETRY_SECONDS:
+                    last_detector_retry = time.time()
+                    try:
+                        det.close()
+                        det.start()
+                        detector_ok = True
+                        log.info("OAK detector recovered on retry.")
+                    except Exception as e:
+                        log.warning("OAK detector retry failed (%s); retrying in %ds.",
+                                    e, DETECTOR_RETRY_SECONDS)
+                if not detector_ok:
+                    _sleep_interruptible(1.0)
+                    continue
 
             # Pull the latest detections + frame from the OAK.
             tracklets, frame = det.poll()

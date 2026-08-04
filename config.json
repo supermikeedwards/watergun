@@ -6,7 +6,7 @@
     "off_hours_cycle_seconds": 300
   },
   "oak": {
-    "device_ip": "192.168.10.2",
+    "device_ip": "",
     "model_blob": "models/yolov8n_coco_640x640.blob",
     "model_input_w": 640,
     "model_input_h": 640,
